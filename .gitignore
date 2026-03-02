@@ -1,0 +1,29 @@
+# Environment variables
+.env
+env/
+.venv
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# macOS specific files
+.DS_Store
+
+# jupyter notebook checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+content/
+.claude/
+__pycache__/
+*.pyc
+.langgraph_api/
+.venv
+uv.lock
+workspace
