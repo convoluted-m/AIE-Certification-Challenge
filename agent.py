@@ -2,11 +2,6 @@
 Runs the DreamNest agent.
 """
 ## Imports
-# If i want to test with openai API first if local models are slow working
-# otherise remove and remove env file
-# for loading environment variables (API keys)
-#import os
-#from dotenv import load_dotenv
 
 # Langchain
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -29,12 +24,6 @@ from typing import List
 # other imports later
 # tavily api? 
 # cohere if reranker
-
-## only if texting with open ai api, otherwise remove
-# Load env variables 
-# load_dotenv() 
-# Pass API key 
-# OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 ## Constants
 # Path to dream data

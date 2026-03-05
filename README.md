@@ -1,6 +1,6 @@
-# AIE Certification Challenge - DreamNest
+# DreamNest
 
-Privacy-first agentic RAG app for personal dream exploration. Built with a FastAPI backend and open-source models run locally. Built for the AI Makerspace AIE9 Certification Challenge. This is a prototype version. Runs locally only for privacy reasons.
+Privacy-first agentic RAG app for personal dream exploration. Built with a FastAPI backend and open-source models and run locally. This is a prototype version. Runs locally only for privacy reasons.  Built for the AI Makerspace AIE9 Certification Challenge.
 
 ### Tech Stack
 - Local inference: Ollama
