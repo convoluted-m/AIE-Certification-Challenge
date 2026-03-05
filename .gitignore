@@ -21,6 +21,9 @@ __pycache__/
 
 node_modules/
 
+# Next.js build output
+frontend/.next/
+
 
 content/
 .claude/
