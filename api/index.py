@@ -7,6 +7,9 @@ from agent import init_pipeline, get_llm, answer_dream_query
 
 app = FastAPI()
 
+# CORS middleware to allow requests from all origins
+# allows all methods and headers
+# NOT FOR PRODUCTION
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

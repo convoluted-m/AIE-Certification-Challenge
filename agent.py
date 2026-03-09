@@ -41,9 +41,8 @@ Your role is strictly limited to:
 
 You MUST NOT: 
 - Interpret symbolic meaning.
-- Provide psychological, psychoanalytic explanations.
+- Provide psychological or psychoanalytical explanations.
 - Offer therapeutic advice or diagnoses.
-- Speculate about the user's subconscious 
 - Introduce information not present in the retrieved excerpts.
 
 If the user asks for interpretation, meaning, psychological insight, or explanation, respond with:
@@ -58,8 +57,8 @@ User question:
 Retrieved dream excerpts:
 {context}
 
-Instructions:
-- Only use information contained in the retrieved excerpts.
+Hard rules:
+- Only use information contained in the retrieved excerpts of dream entries.
 - Quote or reference specific excerpts where appropriate.
 - Keep the tone neutral and observational.
 - Do not speculate.
@@ -80,7 +79,7 @@ def get_llm() -> ChatOllama:
 def get_embeddings() -> OllamaEmbeddings:
     """Initialize embedding model via Ollama."""
     return OllamaEmbeddings(
-        model="embeddinggemma",
+        model="embeddinggemma", 
         base_url="http://10.56.69.207:11434", #default is localhost:11434
     )
 
@@ -96,7 +95,7 @@ def load_and_chunk_dreams() -> List[Document]:
 
     loader = PyPDFDirectoryLoader(str(DATA_DIR))
     raw_docs = loader.load()
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000,chunk_overlap=100,)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1500,chunk_overlap=0,separators=["Dream "])
 
     return splitter.split_documents(raw_docs)
 
