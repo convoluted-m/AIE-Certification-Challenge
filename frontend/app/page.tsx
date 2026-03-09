@@ -85,7 +85,7 @@ export default function Page() {
           }}
         >
           Privacy-first reflective retrieval over your dream journal. Your
-          dreams never leave this device.
+          dreams never leave your device.
         </p>
       </header>
 
@@ -109,10 +109,7 @@ export default function Page() {
             }}
           >
             Ask things like:
-            <br />
             “When have I dreamed about water before?”
-            <br />
-            “Show dreams involving a childhood home.”
           </p>
         )}
 
