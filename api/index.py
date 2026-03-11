@@ -2,8 +2,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# import agent functions
-from agent import init_pipeline, get_llm, answer_dream_query
+# Agent logic
+from agent import (
+    init_pipeline_with_bm25,
+    get_llm,
+    answer_dream_query_hybrid,
+)
 
 app = FastAPI()
 
@@ -22,10 +26,12 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event() -> None:
     """
-    Build the vector store and LLM once when the server starts.
+    Build the vector store, BM25 retriever, and LLM once when the server starts.
     Store them on app.state for reuse across requests.
     """
-    app.state.vector_store = init_pipeline()
+    vector_store, bm25_retriever = init_pipeline_with_bm25()
+    app.state.vector_store = vector_store
+    app.state.bm25_retriever = bm25_retriever
     app.state.llm = get_llm()
 
 # health check endpoint
@@ -48,11 +54,13 @@ async def chat(request: ChatRequest) -> ChatResponse:
     Chat endpoint. Takes a dream-related question and returns a retrieval-grounded answer.
     """
     vector_store = app.state.vector_store
+    bm25_retriever = app.state.bm25_retriever
     llm = app.state.llm
 
-    answer = answer_dream_query(
+    answer = answer_dream_query_hybrid(
         query=request.question,
         vector_store=vector_store,
+        bm25_retriever=bm25_retriever,
         llm=llm,
     )
     return ChatResponse(answer=answer)

@@ -10,8 +10,8 @@ type Message = {
 };
 
 const SUGGESTIONS: string[] = [
-  "Have I dreamt about a house before?",
-  "When have I dreamed about water before?",
+  "Find my dreams about fire",
+  "Have I dreamt about houses?",
   "What recurring locations appear in my dreams?",
 ];
 
@@ -299,7 +299,7 @@ export default function Page() {
                 gap: "0.6rem",
               }}
             >
-              <span>Ask a question about your dreams:</span>
+              <span>Ask a question about your dreams, for example:</span>
               <div
                 role="group"
                 aria-label="Suggested questions"
@@ -402,6 +402,12 @@ export default function Page() {
             rows={3}
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void sendQuestion(question);
+              }
+            }}
             placeholder="Type your question here…"
             aria-label="Dream question input"
             style={{
