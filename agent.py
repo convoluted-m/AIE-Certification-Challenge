@@ -5,6 +5,7 @@ Includes a baseline retriever (semantic search only) and a hybrid retriever (sem
 """
 
 ## Imports
+
 # Langchain
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_community.document_loaders import PyPDFDirectoryLoader
@@ -12,19 +13,19 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.tools import tool
 from langchain.agents import create_agent
 from langchain_community.retrievers import BM25Retriever
+# for certification challenge only - external search with tavilly
+from langchain_community.tools.tavily_search import TavilySearchResults
+
 # Qdrant
 from langchain_qdrant import Qdrant
 from langchain_core.documents import Document
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
+
 # For files 
 from pathlib import Path
 from typing import List, Optional
-# BM25Retriever for retrieval upgrade
-from langchain_community.retrievers import BM25Retriever
-# for certification challenge only - external search with tavilly
-from langchain_community.tools.tavily_search import TavilySearchResults
 
 
 ## Constants
@@ -291,7 +292,7 @@ def hybrid_retrieve(
     bm25_retriever: BM25Retriever,
     k_semantic: int = 5,
     k_lexical: int = 5,
-    k_final: int = 5,
+    k_final: int = 3,
 ) -> List[Document]:
     """
     Hybrid retrieval combining lexical and semantic search.

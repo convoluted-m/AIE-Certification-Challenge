@@ -7,7 +7,7 @@ Privacy-first agentic RAG app for personal dream exploration. Built with a FastA
 - LLM: llama3.2:3b  https://ollama.com/library/llama3.2:3b
 - Embedding model: embeddinggemma https://ollama.com/library/embeddinggemma
 - Vector store: Qdrant (in-memory)
-- Backend: Agentic RAG orchestration: LangChain (LangGraph planned)
+- Backend: Agentic RAG orchestration: LangChain
 - Frontend with Node.js running locally served to the user's browser
 
 ### Data
@@ -73,3 +73,5 @@ curl -X POST http://localhost:8000/api/chat \
 
 ### Privacy
 Inference and embedding runs locally via Ollama. No data is sent to any third-party API. Dream journal data is stored in-memory only.
+
+### Further work planned
