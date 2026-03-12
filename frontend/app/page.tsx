@@ -176,7 +176,7 @@ export default function Page() {
               fontFamily: FONT_SANS,
             }}
           >
-            Privacy-first reflective retrieval over your dream journal.
+            Privacy-first reflective retrieval over your dream archive.
           </p>
           <p
             style={{
@@ -186,7 +186,7 @@ export default function Page() {
               fontFamily: FONT_SANS,
             }}
           >
-            Your dreams never leave this space.
+            Your dreams never leave your device.
           </p>
         </div>
 

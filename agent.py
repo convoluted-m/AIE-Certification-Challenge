@@ -1,8 +1,10 @@
 """
-Logic for the DreamNest agentic pipeline
+Agentic orchestration backend for the DreamNest app.
+Runs locally. Uses Ollama for LLM and embedding models. Qdrant for in-memory vector store.
+Includes a baseline retriever (semantic search only) and a hybrid retriever (semantic + lexical search with bm25).
 """
-## Imports
 
+## Imports
 # Langchain
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_community.document_loaders import PyPDFDirectoryLoader
@@ -10,41 +12,41 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.tools import tool
 from langchain.agents import create_agent
 from langchain_community.retrievers import BM25Retriever
-
 # Qdrant
 from langchain_qdrant import Qdrant
 from langchain_core.documents import Document
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
-
 # For files 
 from pathlib import Path
 from typing import List, Optional
-
 # BM25Retriever for retrieval upgrade
 from langchain_community.retrievers import BM25Retriever
-
 # for certification challenge only - external search with tavilly
 from langchain_community.tools.tavily_search import TavilySearchResults
 
+
 ## Constants
-# Path to dream data
+# Path to dream data file
 DATA_DIR = Path("data")
-# for Qdrant vector store collection name
+# Qdrant vector store collection name
 COLLECTION_NAME = "dreams"
-
-# Simple module-level handles so tools / agents can reuse
-# the same pipeline without passing everything around.
+# global var for dream vector store
 DREAM_VECTOR_STORE: Optional[QdrantVectorStore] = None
-DREAM_LLM: Optional[ChatOllama] = None
+# global var for response LLM
+RESPONSE_LLM: Optional[ChatOllama] = None
 
-# system prompt for retrieval
+
+# System prompt for generating responses
+# Sets the agent's role and provides instructions with few-shot examples
 SYSTEM_PROMPT = """
 You are a retrieval assistant operating over a user's private dream journal archive. Your role is to answer the user query {query} about their dream content based only on the retrieved context {context}.
 
 <Task and Guidelines>
-You are strictly limited to identifying relevant past dream entries and describing patterns that are explicitly visible in the retrieved context. You may report occurrences of themes, locations, objects, or situations, but you must not go beyond what the retrieved context supports. Quote or reference specific entries, dates, or similarity scores where appropriate. When you mention similarity scores, state them  as "Similarity score: X.XX" for each individual dream. Do not invent or describe pairwise similarity relationships between different dreams. Keep the response tone neutral and observational. Keep the responses concise.
+You are strictly limited to identifying relevant past dream entries and describing patterns that are explicitly visible in the retrieved context. You may report occurrences of themes, locations, objects, or situations, but you must not go beyond what the retrieved context supports. Keep the response tone neutral and observational. Keep the responses concise.
+
+When responding, quote or reference specific dream entries, dates, and similarity scores, where appropriate. When quoting dream entries, quote them verbatim and do not alter their content. When you mention similarity scores, state them as "Similarity score: X.XX" for each individual dream. Do not invent or describe pairwise similarity relationships between different dreams.
 
 You MUST NOT:
 - Interpret symbolic meaning or provide psychoanalytical explanations.
@@ -55,7 +57,7 @@ You MUST NOT:
 </Task and Guidelines>
 
 <Steps>
-Follow these steps to answer the user's question:
+Follow these steps to answer the user's questions:
 1. Start with a single concise sentence that directly answers the question.
    - If the question is an existence-style query (e.g. "Have I dreamt about X before?", "Have I had a dream about Y?"), answer with a clear yes/no sentence (e.g. "Yes, you have..." / "No, I didn't find...").
    - If the question is open-ended (e.g. "What recurring locations appear in my dreams?"), start with a brief summary sentence that directly addresses the query.
@@ -117,30 +119,43 @@ Note: The sections marked <Task and Guidelines>, <Steps>, and <Examples> are ins
 """
 
 ## Helper functions
-# Initialize LLM
+
+# Initialise response LLM
 def get_llm() -> ChatOllama:
-    """Initialize local llama chat model via Ollama server."""
+    """
+    Initialise local llama chat model via Ollama server.
+    Creates the chat llm pointing to Ollama server.
+    Default url is http://localhost:11434, but can be overridden if using a remote server
+    """
     llm = ChatOllama(
         model="llama3.2:3b",
-        base_url="http://10.56.69.207:11434",  # default is http://localhost:11434
+        base_url="http://10.56.69.207:11434",  #remote private server onlocal machine to speed up response time
     )
-    global DREAM_LLM
-    DREAM_LLM = llm
+    global RESPONSE_LLM
+    RESPONSE_LLM = llm
     return llm
 
-# Initialize embedding model 
+
+# Initialise embedding model 
 def get_embeddings() -> OllamaEmbeddings:
-    """Initialize embedding model via Ollama."""
+    """
+    Initialise embedding model via Ollama.
+    Default url is http://localhost:11434, but can be overridden if using a remote server.
+    Returns the embeddoing model for Qdrant vector store"""
     return OllamaEmbeddings(
         model="embeddinggemma", 
-        base_url="http://10.56.69.207:11434", #default is localhost:11434
+        base_url="http://10.56.69.207:11434", # remote server on local machine to speed up response time
     )
 
-# Prep dream data (Load and chunk)
+
+# Prepare data (load and chunk)
 def load_and_chunk_dreams() -> List[Document]:
     """
-    Load dream PDF from DATA_DIR and split into chunks for storage and retrieval.
-    RecursiveCharacterTextSplitter is a character based splitter.
+    Loads the dream pdf file from DATA_DIR and splits it into chunks for storage and retrieval.
+    Dreams are split as coherent narrative chunks, separated by "Dream <number>" markers.
+    Eeach dream is a separate chunk for response cohesion.
+    Uses a RecursiveCharacterTextSplitter (character-based).
+    Returns a list of Document objects, each representing a chunk.
     """
     if not DATA_DIR.exists():
         raise FileNotFoundError(f"Dream data directory '{DATA_DIR}' not found. ")
@@ -151,11 +166,12 @@ def load_and_chunk_dreams() -> List[Document]:
 
     return splitter.split_documents(raw_docs)
 
-# Build vector store
+
+# Build Qdrant in-memory vector store
 def build_vector_store(chunks: List[Document]) -> QdrantVectorStore:
     """
-    Create in-memory Qdrant vector store and populate with dream chunks.
-    Takes chunks, creates embeddings, stores in Qdrant.
+    Creates an in-memory Qdrant vector store and populates it with dream chunks.
+    Takes dream chunks, creates embeddings, stores in Qdrant.
     Returns vector_store object
     """
     embeddings = get_embeddings()
@@ -173,16 +189,23 @@ def build_vector_store(chunks: List[Document]) -> QdrantVectorStore:
     vector_store.add_documents(chunks)
     return vector_store
 
-# define lexical BM25 retriever
+
+# lexical retriever (bm25)
 def build_bm25_retriever(chunks: List[Document]) -> BM25Retriever:
-    """ Retrieve chunks using BM25 retriever"""
+    """ 
+    Builds the lexical retriever (bm25) using the chunks.
+    Lexical retriever searches for exact keyword matches in the chunks.
+    Returns the BM25Retriever object.    
+    """
     return BM25Retriever.from_documents(chunks)
 
-# initialise RAG pipeline
-def init_pipeline() -> QdrantVectorStore:
+
+# initialise RAG pipeline - baseline semantic retrieval
+def init_pipeline_semantic() -> QdrantVectorStore:
     """
-    Initialise the full RAG pipeline to build vector store:
-    load, chunk, embed as vectors, store.
+    Initialises RAG pipeline with semantic retrieval.
+    Builds and populates the vector store.
+    Returns the vector store object.
     """
     chunks = load_and_chunk_dreams()
     vector_store = build_vector_store(chunks)
@@ -192,53 +215,57 @@ def init_pipeline() -> QdrantVectorStore:
 
     return vector_store
 
-# initialise RAG pipeline with BM25 retriever - upgrade
-def init_pipeline_with_bm25() -> tuple[QdrantVectorStore, BM25Retriever]:
+
+# Initialise RAG pipeline - upgraded hybrid retrieval
+def init_pipeline_hybrid() -> tuple[QdrantVectorStore, BM25Retriever]:
     """
-    Initialise both semantic (Qdrant) and lexical (BM25) retrievers.
-    Returns (vector_store, bm25_retriever).
+    Initialises the RAG pipeline using both semantic and lexical retrievers.
+    Builds and populates the vector store.
+    Builds the lexical retriever (bm25) using the chunks.
+    Returns the vector store and bm25 retriever objects.
     """
     chunks = load_and_chunk_dreams()
     vector_store = build_vector_store(chunks)
     bm25_retriever = build_bm25_retriever(chunks)
 
-    global DREAM_VECTOR_STORE
+    global DREAM_VECTOR_STORE # used by tools and agent
     DREAM_VECTOR_STORE = vector_store
 
     return vector_store, bm25_retriever
 
 
-# function to answer a dream query - called by fastapi
-def answer_dream_query(
+# RAG answer function (semantic only - baseline)
+# used by fastapi app to answer user questions
+def answer_dream_query_semantic(
     query: str,
     vector_store: QdrantVectorStore,
     llm: ChatOllama,
 ) -> str:
     """
-    - Uses  vector store to retrieve similar dream chunks.
-    - Applies a similarity threshold to avoid weak matches.
-    - Formats context and passes to the LLM 
+    Uses  vector store to retrieve similar dream chunks.
+    Applies a similarity threshold to avoid weak matches.
+    Formats context and passes to the LLM 
+    Returns the LLM response.
     """
     results_with_scores = vector_store.similarity_search_with_score(query, k=3)
 
     if not results_with_scores:
         return "No strong matches were found in your dream archive for this query."
 
-    # Check that the best match is strong enough at all
+    # Tresholding logic to filter out weaker matches
+    # only keep chunks with a similarity score >= 0.4
     top_doc, top_score = results_with_scores[0]
     if top_score < 0.4:
         return "No strong matches were found in your dream archive for this query."
-
-    # Filter out weaker matches (floor is 0.45)
-    # keep docs very close to the best score >= 80% of top_score
+    # only keep chunks very close to the best score >= 80% of top_score
     min_score = max(0.45, top_score * 0.80)
     filtered_results = [
         (doc, score) for doc, score in results_with_scores if score >= min_score
     ]
-
     if not filtered_results:
         return "No strong matches were found in your dream archive for this query."
 
+    # format chunks for the response
     formatted_chunks: list[str] = []
     for idx, (doc, score) in enumerate(filtered_results, start=1):
         source = doc.metadata.get("source", "unknown source")
@@ -247,14 +274,17 @@ def answer_dream_query(
             f"Retrieved dream {idx} (Source: {source}, Page: {page}, Similarity score: {score:.2f}):\n"
             f"{doc.page_content.strip()}"
         )
-
+    # join chunks into a single context string
     context = "\n\n".join(formatted_chunks)
+    # inject the query and context into the system prompt
     prompt = SYSTEM_PROMPT.format(query=query, context=context)
-
+    # invoke the LLM with the full prompt
     response = llm.invoke(prompt)
+    # return the LLM response
     return response.content
 
-# define hybrid retriever with added bm25
+
+# Hybrid retriever with bm25
 def hybrid_retrieve(
     query: str,
     vector_store: QdrantVectorStore,
@@ -264,31 +294,37 @@ def hybrid_retrieve(
     k_final: int = 5,
 ) -> List[Document]:
     """
-    Very simple hybrid retrieval:
-    - get top-k lexical matches with BM25
-    - get top-k semantic matches from Qdrant
-    - return a de-duplicated list preferring lexical hits, then semantic hits
+    Hybrid retrieval combining lexical and semantic search.
+    - Gets top-k lexical matches with BM25
+    - Gets top-k semantic matches from Qdrant
+    - Fuses results to return a de-duplicated list
+    Return a de-duplicated list preferring lexical hits over semantic hits
     """
     # lexical results
-    lexical_docs = bm25_retriever.get_relevant_documents(query)[:k_lexical]
+    lexical_docs = bm25_retriever.invoke(query)[:k_lexical]
     # semantic results 
     semantic_docs = vector_store.similarity_search(query, k=k_semantic)
-
+    # de-duplication set
     seen = set()
+    # fused results list    
     fused: List[Document] = []
-
+    
+    # loop over results and add to fused list if not already seen
     for doc in lexical_docs + semantic_docs:
         key = doc.page_content
+        # key is the page content of the document
         if key in seen:
             continue
         seen.add(key)
         fused.append(doc)
+        # stop if we have reached the final number of results
         if len(fused) >= k_final:
             break
 
     return fused
 
-# function to answer a dream query using hybrid retriever
+
+# RAG answer function (lexical and semantic search - hybrid)
 def answer_dream_query_hybrid(
     query: str,
     vector_store: QdrantVectorStore,
@@ -296,14 +332,17 @@ def answer_dream_query_hybrid(
     llm: ChatOllama,
 ) -> str:
     """
-    Answer a dream query using a simple hybrid retriever (BM25 + semantic).
-    Intended as a retrieval upgrade over pure semantic search.
+    Answers the user's query using the hybrid retriever.
+    Gets the top-k lexical and semantic matches. 
+    Formats results and passes to LLM.
+    Returns the LLM response.
     """
+    # fused docs
     docs = hybrid_retrieve(query, vector_store, bm25_retriever)
-
     if not docs:
         return "No strong matches were found in your dream archive for this query."
 
+    # format chunks for the response
     formatted_chunks: list[str] = []
     for idx, doc in enumerate(docs, start=1):
         source = doc.metadata.get("source", "unknown source")
@@ -312,34 +351,37 @@ def answer_dream_query_hybrid(
             f"Retrieved dream {idx} (Source: {source}, Page: {page}):\n"
             f"{doc.page_content.strip()}"
         )
-
+    # join chunks into a context string
     context = "\n\n".join(formatted_chunks)
+    # inject query and context into  system prompt
     prompt = SYSTEM_PROMPT.format(query=query, context=context)
-
+    # invoke LLM with full prompt
     response = llm.invoke(prompt)
     return response.content
 
+
+## Agent's tools
+# RAG tool for searching dreams (uses semantic retrieval function)
 @tool
 def dream_archive_search(query: str) -> str:
     """
     Tool: search the user's private dream archive for relevant entries and patterns.
-
-    Uses the same retrieval logic as the main DreamNest agent. Requires that
-    init_pipeline() and get_llm() have been called so DREAM_VECTOR_STORE and
-    DREAM_LLM are populated.
+    Uses the same retrieval logic as the main DreamNest agent. 
+    Requires that init_pipeline_semantic() and get_llm() have been called so DREAM_VECTOR_STORE and RESPONSE_LLM are populated.
     """
-    if DREAM_VECTOR_STORE is None or DREAM_LLM is None:
+    if DREAM_VECTOR_STORE is None or RESPONSE_LLM is None:
         raise RuntimeError(
-            "Dream pipeline is not initialised. Call init_pipeline()/get_llm() first."
+            "Dream pipeline is not initialised. Call init_pipeline_semantic()/get_llm() first."
         )
-    return answer_dream_query(query, DREAM_VECTOR_STORE, DREAM_LLM)
+    return answer_dream_query_semantic(query, DREAM_VECTOR_STORE, RESPONSE_LLM)
 
 
+# Tavily tool for external search (for general info about dreaming/ journaling)
 @tool
 def tavily_dream_info(query: str) -> str:
     """
     Tool: search the public web for general information about dreaming and dream journaling.
-    Never use this tool to answer questions about the user's specific dreams or to interpret dream symbols.
+    Never use this tool to answer questions about the user's specific dreams or to interpret dream meanings.
     """
     client = TavilySearchResults(
         max_results=3,
@@ -352,15 +394,16 @@ def tavily_dream_info(query: str) -> str:
     )
     return client.run(query)
 
+## Agent
+# Create the RAG agent with tools
 def build_retrieval_agent(llm: Optional[ChatOllama] = None):
     """
-    Create an agent that can call:
+    Creates an agent that can call the following tools:
     - dream_archive_search (private RAG over the user's dream journal)
     - tavily_dream_info (general info about dreaming / journaling)
-
-    Assumes init_pipeline() and get_llm() have been called beforehand if llm is None.
+    Assumes init_pipeline_semantic() and get_llm() have been called beforehand if llm is None.
     """
-    agent_llm = llm or DREAM_LLM
+    agent_llm = llm or RESPONSE_LLM
     if agent_llm is None:
         raise RuntimeError(
             "LLM is not initialised. Provide an llm or call get_llm() first."
