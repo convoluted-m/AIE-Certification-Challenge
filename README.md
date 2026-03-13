@@ -20,7 +20,7 @@ Sample list of queries:
 
 ## 2. Solution
 
-DreamNest is an agentic RAG system built over the user's private dream journal. It features a minimal chat interface served locally in a browser. The flow is the folowing: the user asks a natural language question about their dream. The agent decides whether the query is about a specific dreams (routes to the private retrieval tool) or a general question about dreaming (routes to a public web search via Tavily). Agent responses are grounded only in the retrieved content and descriptive in nature — the system surfaces patterns and excerpts, it is not intended to provide psychoanalytical commentary. The stack is fully local using an open source LLM and embedding models and is run via Ollama on the user's machine.
+DreamNest is an agentic RAG system built over the user's private dream journal. It features a minimal chat interface served locally in a browser. The flow is as follows: the user asks a natural language question about their dreams. The agent decides whether the query is about specific dreams (routes to the private retrieval tool) or a general question about dreaming (routes to public web search via Tavily). Agent responses are grounded only in retrieved content and remain descriptive rather than psychoanalytical. The stack is local-first with open-source LLM and embedding models running via Ollama, with Tavily as the single external API used to satisfy assignment requirements.
 
 ```
 User (browser)
@@ -41,7 +41,7 @@ LangChain agent orchestration   ◄────  create_agent(), SYSTEM_PROMPT (
      │         │   cosine similarity search, score-based filtering
      │         │
      │         └── Hybrid retriever → dream_archive_search (Tool 1, upgraded)
-     │             semantic search + lexical keyword search = fused
+     │             semantic search + BM25 lexical retrieval, fused with weighted RRF
      │
      └──► tavily_dream_info (Tool 2 — public web search via Tavily API)
      │
@@ -82,15 +82,23 @@ Data: For the prototype, 32 synthetic dream journal entries, written as a single
 
 Chunking strategy: The document is split one dream entry per chunk, using `"Dream "` as the separator in `RecursiveCharacterTextSplitter`. Chunk overlap is set to 0. This decision was made because the unit of retrieval should be a complete dream entry. Splitting a dream mid-narrative would break the semantic coherence of the entry (the beginning and end of a single dream would appear in different chunks and could be retrieved independently, degrading retrieval precision and response quality. Using entry boundaries as natural split points keeps each retrieved chunk self-contained and meaningful.
 
-External API: Tavily Search API (`tavily_dream_info` tool). Used for general questions about dreaming and dream journalling (e.g. *"Is it helpful to keep a dream journal?"*). Tavily is not called for queries about the user's specific dreams. The tool was included in the prototype to meet the certification challenge requirements.
+External API: Tavily Search API (`tavily_dream_info` tool). Used for general questions about dreaming and dream journaling (e.g. *"Is it helpful to keep a dream journal?"*). Tavily is not called for queries about the user's specific dreams. The tool is included in the prototype to meet the certification challenge requirements.
 
 ## 4. End-to-End Prototype
 
-Full agent loop (LLM → tool call → retrieval → LLM summarises → response) is implemnted in the prototype:
+Full agent loop (LLM -> tool call -> retrieval -> LLM summarizes -> response) is implemented in the prototype:
 
 - FastAPI backend (`api/index.py`) initialises the hybrid RAG pipeline and agent on startup
 - LangChain `create_agent()` with two `@tool` functions handles user queries
 - Next.js frontend (`frontend/`) provides a chat UI served at `localhost:3000`
+
+Prototype UI screenshot:
+
+<p align="center" draggable="false">
+  <img src="./dreamnest_prototype_UI.png" alt="DreamNest prototype UI" width="800px" height="auto"/>
+</p>
+
+*Local DreamNest prototype UI showing agentic retrieval responses in the chat flow.*
 
 Note: Runtime serving is agentic-only (`create_agent()` + tools). Legacy fixed-flow helpers are kept only for debugging in `debug/legacy_fixed_rag.py`.
 
@@ -104,57 +112,69 @@ The golden test set (10 manually defined cases) covers: positive retrieval (obje
 
 Metrics evaluated:
 
-- Faithfulness — checks whether the answer sticks to retrieved context
-  Answer Relevancy — checks if the answer is relevant to the question asked
-- Context Precision— checks how how much of the retrieved context is actually useful
-- Context Recall — checks if  the relevant chunks were retrieved
-- Noise Sensitivity — checks how much irrelevant retrieved context affects the answer
+- Faithfulness — checks whether the answer stays grounded in retrieved context
+- Answer Relevancy — checks whether the answer addresses the user question
+- Context Precision — checks how much of retrieved context is actually useful
+- Context Recall — checks whether relevant chunks were retrieved
+- Noise Sensitivity — checks how much irrelevant retrieved context affects answer quality
 
 Baseline results (semantic retriever):
 
 | Metric | Score |
 |---|---|
-| Faithfulness | 0.50 |
-| Answer Relevancy | 0.38 |
-| Context Precision | 0.60 |
-| Context Recall | 0.45 |
-| Noise Sensitivity | 0.44 |
+| Faithfulness | 0.4995 |
+| Answer Relevancy | 0.3782 |
+| Context Precision | 0.5000 |
+| Context Recall | 0.3500 |
+| Noise Sensitivity | 0.3699 |
 
 
 ## 6. Retriever Upgrade
 
-Advanced retrieval technique: Hybrid retrieval (semantic + lexical keyword scan)
+Advanced retrieval technique: Hybrid retrieval (semantic + BM25 lexical retrieval + weighted RRF fusion)
 
 Semantic similarity alone struggles with exact keyword queries. Embedding models represent meaning in a continuous space, which is good for thematic queries ("recurring locations") but can miss exact term matches for rare or specific words ("fire", "train", "clock") if their cosine similarity scores fall below the retrieval threshold. BM25 lexical search is strong at exact matches but misses semantic variation. Combining both approaches improves recall for specific keyword queries while retaining semantic breadth for thematic ones.
 
 Implementation:
 - Semantic component: Qdrant similarity search with score-based filtering (minimum threshold 0.2; relative filter at 75% of top score)
-- Lexical component: in-memory token scan across all loaded dream chunks for exact query term matches
-- Fusion: de-duplicated merge preferring semantic hits, up to `k=3` final chunks
+- Lexical component: BM25Retriever over dream chunks with normalized query token handling
+- Fusion: weighted Reciprocal Rank Fusion (RRF), with a slight lexical boost for exact-match queries, returning top `k=3` results
 
 Hybrid results (agentic pipeline):
 
 | Metric | Baseline (semantic) | Hybrid (semantic + lexical) |
 |---|---|---|
-| Faithfulness | 0.50 | **0.55** |
-| Answer Relevancy | 0.38 | 0.37 |
-| Context Precision | **0.60** | 0.50 |
-| Context Recall | **0.45** | 0.35 |
-| Noise Sensitivity | **0.44** | 0.43 |
+| Faithfulness | 0.4995 | 0.4958 |
+| Answer Relevancy | 0.3782 | 0.3794 |
+| Context Precision | 0.5000 | **0.6000** |
+| Context Recall | 0.3500 | **0.4000** |
+| Noise Sensitivity | 0.3699 | **0.2803** |
+
+Evaluation note: In this run, the hybrid retriever improved retrieval quality (`context_precision`, `context_recall`) and reduced noise sensitivity, with only a negligible drop in faithfulness. Since RAGAS is LLM-judge based and non-deterministic, results should be interpreted as trend evidence and validated across repeated runs.
+
+Noise metric note: We track `noise_sensitivity_relevant` to measure how much irrelevant retrieved context interferes with answer quality (lower is better). In this run it improved from 0.3699 (baseline) to 0.2803 (hybrid). Example from per-question outputs: for `"Have I dreamt about whales?"`, retrieved contexts still included multiple water-related dreams that did not mention whales. This illustrates residual retrieval noise from semantic similarity, even when the final answer is correct.
 
 ## 7. Next Steps
 
-- Symbol extraction: detect recurring symbols explicitly using a classifier rather than relying on keyword matching
-- Emotional texture retrieval: embed and retrieve by emotional tone in addition to content keywords
-- Track symbol or motif evolution over time: *"Do I always dream of water when I'm anxious?"*
-- Dashboard view with statistics: most frequent locations, symbols, time-of-year patterns
-- Visualisations of recurring patterns across the archive
-- Timeline view of retrieved entries
-- Allow user to load their own dream journal PDFs directly from the UI
-- Replace Tavily with a fully local alternative (e.g. a local web scraper) to eliminate the only remaining external API call
-- Explore real dream journal corpora from open archives (e.g. DreamBank) as an optional data source for users without their own archive
+- **Retrieval quality**
+  - Add query-aware retrieval depth (higher top-k for pattern/aggregation queries).
+  - Improve recurring-pattern aggregation and symbol extraction beyond keyword matching.
+  - Evaluate local/open-source rerankers and metadata-aware retrieval (not external services like Cohere Rerank, to preserve privacy goals).
+- **Product and UX**
+  - Add timeline and dashboard views for recurring motifs/locations.
+  - Add visualizations and emotional-tone retrieval for richer reflection workflows.
+  - Allow users to upload their own dream journal PDFs directly from the UI.
+- **Privacy and deployment**
+  - Replace Tavily with a fully local alternative to remove the remaining external API dependency.
+  - Assess performance/scalability on laptop-class hardware and evaluate persistent vector storage options.
+  - Explore optional public corpora (e.g., DreamBank) and gather feedback from open-source self-analysis communities.
 
-- Share with open-source self-analysis communities for feedback and co-development
+## Notes and Limitations
+
+- Privacy-first/local-first is the target architecture for this project, but the current prototype is not strictly fully local while Tavily is enabled because Tavily is an external web API.
+- Tavily is included in this prototype to satisfy the assignment requirement to integrate at least one external API/tool.
+- The current prototype uses an in-memory Qdrant vector store and local model inference, which can be slow or resource-heavy on a laptop-class machine; this will be reviewed in future iterations.
+- RAGAS uses an LLM-as-judge evaluator, so metric scores are non-deterministic across runs; single-run results should be treated as indicative trends rather than absolute values.
 
 ## How to Run
 

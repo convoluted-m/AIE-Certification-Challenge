@@ -1,6 +1,6 @@
 """
-Agentic orchestration backend for the DreamNest app.
-Runs locally. Uses Ollama for LLM and embedding models. Qdrant for in-memory vector store.
+Agentic orchestration backend for the DreamNest prototype.
+Runs locally (Ollama server on local machine, open source LLM and embedding models, in-memory Qdrant vector store).
 Includes a baseline retriever (semantic search only) and a hybrid retriever (semantic + lexical search with bm25).
 """
 
@@ -21,30 +21,28 @@ from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 
-# For files 
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import re
-
 from dotenv import load_dotenv
 load_dotenv()
+
 
 ## Constants
 # Path to dream data file
 DATA_DIR = Path("data")
+
 # Qdrant vector store collection name
 COLLECTION_NAME = "dreams"
 
-# Global handles used by agent
+# Globals used by the agent
 DREAM_VECTOR_STORE: Optional[QdrantVectorStore] = None
 DREAM_BM25: Optional[BM25Retriever] = None
 DREAM_CHUNKS: List[Document] = []   # kept in memory for reliable keyword search
 RESPONSE_LLM: Optional[ChatOllama] = None
 
 
-# System prompt — passed to create_agent
-# The agent uses this to guide responses after receiving tool results; tool returns raw retrieved content,
-# and the agent LLM formats the final answer using these instructions.
+# System prompt used by the agent (defines scope, tool routing, response style, guardrails, few-shot examples)
 SYSTEM_PROMPT = """
 You are a retrieval assistant operating over a user's private dream journal archive. Your role is to answer questions about the user's dream content based only on the content returned by your tools.
 
@@ -152,23 +150,19 @@ Note: The sections marked <Task and Guidelines>, <Steps>, and <Examples> are ins
 
 ## Helper functions
 
-# Initialise response LLM (local Ollama model)
+# Initialise response LLM 
 def get_llm() -> ChatOllama:
     """
     Initialise local chat model via Ollama server.
-    Currently uses the larger `gpt-oss:20b` model for better reasoning.
-    If you need a lighter model, switch `model` below back to `"llama3.2:3b"`.
-
-    Default url is http://localhost:11434, but can be overridden if using a remote server.
+    Uses `gpt-oss:20b`, alternative lighter model: `"llama3.2:3b"`)
+    Default url is http://localhost:11434 
+    (overridden here since I'm using a remote private server to speed up response time
     """
     llm = ChatOllama(
-        # Primary model for this project (heavier but stronger, fully local via Ollama):
         model="gpt-oss:20b",
-        # To revert to the lighter local model, change the line above to:
-        # model="llama3.2:3b",
-        base_url="http://10.56.69.207:11434",  # remote private server on local machine to speed up response time
-        # Important: fully disable streaming aggregation to avoid
-        # `No data received from Ollama stream` errors in langchain-ollama.
+        base_url="http://10.56.69.207:11434",  
+        # encountered errors 'No data received from Ollama stream` in langchain-ollama 
+        # so fully disable streaming aggregation 
         disable_streaming=True,
     )
     global RESPONSE_LLM
@@ -180,11 +174,12 @@ def get_llm() -> ChatOllama:
 def get_embeddings() -> OllamaEmbeddings:
     """
     Initialise embedding model via Ollama.
-    Default url is http://localhost:11434, but can be overridden if using a remote server.
+    Default url is http://localhost:11434 
+    (overridden here since I'm using a remote private server to speed up response time).
     Returns the embeddoing model for Qdrant vector store"""
     return OllamaEmbeddings(
         model="embeddinggemma", 
-        base_url="http://10.56.69.207:11434", # remote server on local machine to speed up response time
+        base_url="http://10.56.69.207:11434", 
     )
 
 
@@ -192,8 +187,8 @@ def get_embeddings() -> OllamaEmbeddings:
 def load_and_chunk_dreams() -> List[Document]:
     """
     Loads the dream pdf file from DATA_DIR and splits it into chunks for storage and retrieval.
-    Dreams are split as coherent narrative chunks, separated by "Dream <number>" markers.
     Eeach dream is a separate chunk for response cohesion.
+    Chunks are split with"Dream <number>" marker as separator.
     Uses a RecursiveCharacterTextSplitter (character-based).
     Returns a list of Document objects, each representing a chunk.
     """
@@ -207,7 +202,7 @@ def load_and_chunk_dreams() -> List[Document]:
     return splitter.split_documents(raw_docs)
 
 
-# Build Qdrant in-memory vector store
+#  Qdrant in-memory vector store
 def build_vector_store(chunks: List[Document]) -> QdrantVectorStore:
     """
     Creates an in-memory Qdrant vector store and populates it with dream chunks.
@@ -235,7 +230,7 @@ def build_bm25_retriever(chunks: List[Document]) -> BM25Retriever:
     """ 
     Builds the lexical retriever (bm25) using the chunks.
     Lexical retriever searches for exact keyword matches in the chunks.
-    k=20 so we get enough candidates before applying keyword filter.
+    k=20 to get enough candidates before applying keyword filter.
     Returns the BM25Retriever object.    
     """
     retriever = BM25Retriever.from_documents(chunks)
@@ -251,7 +246,7 @@ STOPWORDS = {
     "can", "could", "would", "should", "please", "dream", "dreams", "my",
 }
 
-
+# normalise query tokens
 def _normalize_query_tokens(text: str) -> List[str]:
     """
     Normalize query text into lexical tokens used by BM25 filtering/fusion.
@@ -264,10 +259,10 @@ def _normalize_query_tokens(text: str) -> List[str]:
     return [tok for tok in raw_tokens if len(tok) > 2 and tok not in STOPWORDS]
 
 
-# initialise RAG pipeline - baseline semantic retrieval
+# initialise baseline RAG pipeline (semantic retrieval)
 def init_pipeline_semantic() -> QdrantVectorStore:
     """
-    Initialises RAG pipeline with semantic retrieval.
+    Initialises the baseline RAG pipeline with semantic retrieval.
     Builds and populates the vector store.
     Returns the vector store object.
     """
@@ -281,10 +276,10 @@ def init_pipeline_semantic() -> QdrantVectorStore:
     return vector_store
 
 
-# Initialise RAG pipeline - upgraded hybrid retrieval
+# Initialise hybrid RAG pipeline (upgraded retrieval)
 def init_pipeline_hybrid() -> tuple[QdrantVectorStore, BM25Retriever]:
     """
-    Initialises the RAG pipeline using both semantic and lexical retrievers.
+    Initialises the hybrid RAG pipeline using both semantic and lexical retrievers.
     Builds and populates the vector store.
     Builds the lexical retriever (bm25) using the chunks.
     Returns the vector store and bm25 retriever objects.
@@ -306,7 +301,7 @@ def init_pipeline_hybrid() -> tuple[QdrantVectorStore, BM25Retriever]:
 def hybrid_retrieve(
     query: str,
     vector_store: QdrantVectorStore,
-    bm25_retriever: BM25Retriever,
+    bm25_retriever: Optional[BM25Retriever],
     k_semantic: int = 5,
     k_lexical: int = 5,
     k_final: int = 3,
@@ -322,38 +317,39 @@ def hybrid_retrieve(
     results_with_scores = vector_store.similarity_search_with_score(query, k=k_semantic)
 
     top_score = results_with_scores[0][1] if results_with_scores else 0
-    # Keep semantic docs if scores are above the minimum threshold.
-    # Threshold is 0.2 (not 0.4) because embeddinggemma produces scores in
-    # the 0.25-0.45 range on this corpus — a strict 0.4 cutoff blocks valid results.
-    # Relative filter keeps only docs within 75% of the top score.
+    # Keep chunks if scores are above  minimum threshold of 0.2
+    # plus relative filter keeps docs within 75% of the top score
     if top_score >= 0.2:
         min_score = top_score * 0.75
         semantic_docs: List[Document] = [
             doc for doc, score in results_with_scores if score >= min_score
         ]
     else:
-        # Semantic scores very low — rely more on BM25 below.
+        # if Semantic scores very low rely more on BM25 
         semantic_docs = []
 
     # lexical retrieval using BM25
-    # Use normalized tokens to improve query robustness ("fire?" -> "fire").
-    query_tokens = _normalize_query_tokens(query)
-    lexical_query = " ".join(query_tokens) if query_tokens else query
-    lexical_candidates: List[Document] = bm25_retriever.invoke(lexical_query)[:k_lexical]
+    # When bm25_retriever is None runs semantic-only retrieval
+    if bm25_retriever is not None:
+        # Use normalized tokens to improve query robustness ("fire?" -> "fire").
+        query_tokens = _normalize_query_tokens(query)
+        lexical_query = " ".join(query_tokens) if query_tokens else query
+        lexical_candidates: List[Document] = bm25_retriever.invoke(lexical_query)[:k_lexical]
 
-    if query_tokens:
-        # Filter lexical hits to chunks that contain at least one normalized term.
-        # This avoids retrieving chunks that are BM25-near but semantically off-target.
-        lexical_docs = []
-        for doc in lexical_candidates:
-            doc_tokens = set(re.findall(r"[a-zA-Z]+", doc.page_content.lower()))
-            if any(tok in doc_tokens for tok in query_tokens):
-                lexical_docs.append(doc)
+        if query_tokens:
+            # Filter lexical hits to chunks that contain at least one normalized term.
+            lexical_docs = []
+            for doc in lexical_candidates:
+                doc_tokens = set(re.findall(r"[a-zA-Z]+", doc.page_content.lower()))
+                if any(tok in doc_tokens for tok in query_tokens):
+                    lexical_docs.append(doc)
+        else:
+            lexical_docs = lexical_candidates
     else:
-        lexical_docs = lexical_candidates
+        lexical_docs = []
 
-    # Weighted Reciprocal Rank Fusion (RRF).
-    # BM25 gets a small boost for exact term matching; semantic captures paraphrase/theme.
+    # Weighted Reciprocal Rank Fusion 
+    # BM25 gets a small boost for exact term matching
     fusion_scores: Dict[Tuple[str, str, str], float] = {}
     docs_by_key: Dict[Tuple[str, str, str], Document] = {}
     first_seen_idx: Dict[Tuple[str, str, str], int] = {}
@@ -394,7 +390,6 @@ def hybrid_retrieve(
 
 
 ## Agent's tools
-
 class _ArchiveQuery(BaseModel):
     query: str = Field(description="Plain text search query, e.g. 'fire', 'house', 'recurring water dreams'")
 
@@ -415,10 +410,7 @@ def dream_archive_search(query: str) -> str:
         raise RuntimeError("Dream pipeline not initialised. Call init_pipeline_hybrid() first.")
 
     print(f"[TOOL] dream_archive_search called — query: {query!r}")
-    # Hybrid retrieval: semantic (Qdrant) + lexical retrieval (BM25).
-    # Combines semantic similarity with exact keyword matching so that both
-    # thematic queries ("recurring locations") and specific keyword queries
-    # ("fire", "whale", "clocks") are handled reliably.
+
     docs = hybrid_retrieve(query, DREAM_VECTOR_STORE, DREAM_BM25)
 
     if not docs:
@@ -433,14 +425,13 @@ def dream_archive_search(query: str) -> str:
     return "\n\n".join(formatted)
 
 
-# Tavily tool for external search (for general info about dreaming)
+# Tavily tool for external search
 @tool("tavily_dream_info", args_schema=_WebQuery)
 def tavily_dream_info(query: str) -> str:
     """
     Search the public web for general information about dreaming and dream journaling.
-
-    Use this tool ONLY for general, public information about sleep, dreaming, or journaling
-    (e.g. what is a dream journal, basic sleep hygiene, benefits of keeping a dream diary).
+    Use this tool ONLY for general, public information about sleep, dreaming, or dream journaling
+    (e.g. what is a dream journal, benefits of keeping a dream diary).
     Do NOT use this tool to answer questions about the user's specific dreams or to interpret
     dream meanings.
     """
@@ -466,6 +457,6 @@ def build_retrieval_agent(llm: Optional[ChatOllama] = None):
         )
 
     tools = [dream_archive_search, tavily_dream_info]
-    # One system prompt passed to create_agent — same pattern as the lesson code.
-    # The tool returns raw retrieved content; the agent LLM uses SYSTEM_PROMPT to format the answer.
+    # The tool returns raw retrieved content
+    # the agent LLM uses SYSTEM_PROMPT to format the answer
     return create_agent(agent_llm, tools=tools, system_prompt=SYSTEM_PROMPT)

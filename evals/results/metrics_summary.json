@@ -1,0 +1,25 @@
+{
+  "note": "RAGAS evaluation is non-deterministic (LLM-as-judge). Scores vary between runs.",
+  "generated_at_utc": "2026-03-13T11:54:12Z",
+  "metrics": [
+    "faithfulness",
+    "answer_relevancy",
+    "context_precision",
+    "context_recall",
+    "noise_sensitivity_relevant"
+  ],
+  "baseline": {
+    "faithfulness": 0.4995,
+    "answer_relevancy": 0.3782,
+    "context_precision": 0.5,
+    "context_recall": 0.35,
+    "noise_sensitivity_relevant": 0.3699
+  },
+  "hybrid": {
+    "faithfulness": 0.4958,
+    "answer_relevancy": 0.3794,
+    "context_precision": 0.6,
+    "context_recall": 0.4,
+    "noise_sensitivity_relevant": 0.2803
+  }
+}

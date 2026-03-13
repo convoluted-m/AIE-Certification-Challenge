@@ -36,3 +36,14 @@ workspace
 
 copy.md
 test.py
+
+
+# debugging code - old
+debug/
+tests/
+# local-only testing scratch files
+tests/local_*.py
+tests/_scratch/
+tests/tmp/
+# eval run outputs for analysis
+evals/results/*_run_today.csv
