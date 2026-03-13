@@ -4,23 +4,23 @@ Privacy-first agentic RAG system for reflective dream exploration. Built with op
 
 ## 1. Problem + Audience
 
-This app is built for people like me who keep dream journals and want to search through them in an easy way to reflect on their dream life. It should be easier than flipping through the pages of physical notebooks forever! Over months and years, one can end up with many notebooks full of recurring themes and be unable to connect the dots, to point to the exact dreams featuring specific patterns. It's hard to do it by hand, take my word. If you ever wondered, *"When have I dreamt about fire?"* or *"Do I dream of flying yettis often?", you're not alone. This app is a solution to this existential pain by providing grounded, descriptive answers dream queries drawn only from your own writing. And because I wanted something that feels like a safe cosy space where my intimate data is not sent to third-parties, this app runs fully locally. Finally, I wanted this to be a tool that preserves your own agency in meaning-making of your inner life, that's why it's a descriptive retrieval system, not a psychonalaytical engine - save that for your personal analysis sessions and long dark nights. Welcome to your DreamNest.
+This app is built for people like me who keep dream journals and want to search through them in an easy way to reflect on their dream life. Over months and years, one can end up with many notebooks full of recurring themes and be unable to connect the dots, to point to the exact dreams featuring specific patterns. It's hard to do it by hand, take my word. It should be easier than flipping through the pages of physical notebooks! If you ever wondered, *"When have I dreamt about fire?"* or *"Do I dream of flying yetis often?", you're not alone :). This app is a solution to this pain by providing grounded, descriptive answers to dream queries drawn only from the user's private dream archive. And because working with your intimate dream data should feel like a safe cosy space this app runs fully locally and the user's dream data is not to third-parties. Finally, I forml;y believe that dream analysis should preserves the user's agency in meaning-making. That's why this system focuses on descriptive retrieval,not interpretation - let's save that for actual analysis sessions and long dark night pondering. Welcome to your DreamNest.
 
-Sample list of queries:
- 
-| Query | Expected behaviour |
-|---|---|
-| "Have I dreamt about fire??" | Searches for dreams containing fire. If found, returns them with dates and excerpts. I|
-| "Have I dreamt about whales?" | If the user hasn't recorded dreams featuring whales, system replies that no relevant dreams were found in the user's journal. |
-| "When have I dreamt about water?" | Aggregates results and retrieves dreams with lake, river, sea, pool etc. |
-| "What recurring locations appear in my dreams?" | Aggregates recurring locations across archive |
-| "What does dreaming about fire mean?" | Guardrail: declines to interpret, offers to search dreamer's archive instead |
-| "What should I cook for dinner?" | Guardrail: out of scope, redirects to dream queries |
-| "Is it helpful to write down your dreams?" | Routes to Tavily web search for general info about dreaming |
+The prototype supports queries like:
+
+- `"Have I dreamt about fire?"` -> Searches for dreams containing fire and returns relevant dreams with dates/excerpts, if found
+- `"Have I dreamt about whales?"` -> If no whale dreams are recorded, replies that no relevant dreams were found
+- `"When have I dreamt about water?"` -> Aggregates and retrieves water-related dreams (e.g., lake, river, sea, pool)
+- `"What recurring locations appear in my dreams?"` ->  summarises recurring locations across the dream archive
+- `"What does dreaming about fire mean?"` -> Guardrail: declines interpretation and offers archive search instead
+- `"What should I cook for dinner?"` -> Guardrail: for out of scope queries, redirects to dream-related ones
+- `"Is it helpful to write down your dreams?"` -> uses  web search for general dreaming information (for certification challenge requirements)
 
 ## 2. Solution
 
-DreamNest is an agentic RAG system built over the user's private dream journal. It features a minimal chat interface served locally in a browser. The flow is as follows: the user asks a natural language question about their dreams. The agent decides whether the query is about specific dreams (routes to the private retrieval tool) or a general question about dreaming (routes to public web search via Tavily). Agent responses are grounded only in retrieved content and remain descriptive rather than psychoanalytical. The stack is local-first with open-source LLM and embedding models running via Ollama, with Tavily as the single external API used to satisfy assignment requirements.
+DreamNest is an agentic RAG system built over the user's private dream journal. It features a minimal chat interface served locally in a browser. The flow is as follows: the user asks a question about their dreams --> The agent decides whether the query is about specific dreams (routes to the retrieval tool) or a general question about dreaming (routes to public web search). Agent responses are grounded only in retrieved content and focus on describing retrieved dream patterns. 
+
+The stack is local-first with open-source LLM and embedding models running via Ollama, with Tavily as the single external API (used to satisfy certification challenge requirements).
 
 ```
 User (browser)
@@ -32,7 +32,7 @@ Next.js frontend (localhost:3000)
 FastAPI backend (localhost:8000)
      │
      ▼
-LangChain agent orchestration   ◄────  create_agent(), SYSTEM_PROMPT (guardrails, routing rules)
+LangChain agent orchestration   ◄────  create_agent(), SYSTEM_PROMPT (rules, guardrails, tool routing)
      │
      ├──► Qdrant vector store (in-memory)
      │    ◄── OllamaEmbeddings (embeddinggemma, local)
@@ -41,7 +41,7 @@ LangChain agent orchestration   ◄────  create_agent(), SYSTEM_PROMPT (
      │         │   cosine similarity search, score-based filtering
      │         │
      │         └── Hybrid retriever → dream_archive_search (Tool 1, upgraded)
-     │             semantic search + BM25 lexical retrieval, fused with weighted RRF
+     │             semantic search + BM25 lexical retrieval, fused with RRF
      │
      └──► tavily_dream_info (Tool 2 — public web search via Tavily API)
      │
@@ -52,13 +52,12 @@ ChatOllama (gpt-oss:20b, local via Ollama)
 FastAPI → Next.js → User
 ```
 
-
 Tooling choices:
 
 - LLM — `gpt-oss:20b` via Ollama. Open-source, runs locally — no user data sent externally.
 - Embedding model — `embeddinggemma` via Ollama. Open-source, lightweight model, runs locally - good semantic similarity for dream narration.
 - Agent orchestration — LangChain `create_agent()`. Handles agentic RAG and tool routing.
-  - Tool 1 — `dream_archive_search`. Retrieves from private archive using lexical + semantic hybrid retrieval.
+  - Tool 1 — `dream_archive_search`. Retrieves from private dream archive using lexical + semantic retrieval.
   - Tool 2 — `tavily_dream_info`  via Tavily API. Handles general questions about dreaming and dream journaling.
 - Vector database — Qdrant (in-memory) - fully local; sufficient for prototype.
 - Backend — FastAPI . Lightweight Python API.
@@ -67,22 +66,20 @@ Tooling choices:
 - Deployment — Local only as a privacy requirement — user data does not leave the device.
 
 RAG components:
-- Retriever: hybrid retriever combining Qdrant semantic search and BM25 lexical retrieval, fused via weighted reciprocal rank fusion (RRF)
-- Generator: `ChatOllama (gpt-oss:20b)` summarises raw retrieved dream content into a natural language response
+- Retriever: hybrid retriever combining Qdrant semantic search and BM25 lexical search, fused with reciprocal rank fusion (RRF)
+- Generator: `ChatOllama (gpt-oss:20b)` summarises retrieved dream content into a response
 
 Agent components:
-- `create_agent()` with two tools
-- `SYSTEM_PROMPT` with routing rules, guardrails against interpretation, and response format guidance
-- The agent decides per query whether to call `dream_archive_search`, `tavily_dream_info`, or respond directly (e.g. for guardrail cases)
-
+- `create_agent()` agent with two tools decides whether and when to call each tool
+- `SYSTEM_PROMPT` prompt with instructions, guardrails, tool routing rules and few-shot examples 
 
 ## 3. Data + Chunking
 
-Data: For the prototype, 32 synthetic dream journal entries, written as a single PDF (`data/dream_entries.pdf`). Each entry includes a date and a first-person dream narrative (100–300 words). The entries feature recurring motifs (water, houses, bridges, clocks, trains) to support retrieval and pattern evaluation.
+For the prototype, I generated 32 synthetic dream journal entries and saved them as a single PDF (`data/dream_entries.pdf`). Each entry includes a date and a first-person dream narrative (100–300 words). The entries feature recurring motifs (water, houses, bridges, clocks, trains) to support retrieval and pattern evaluation.
 
-Chunking strategy: The document is split one dream entry per chunk, using `"Dream "` as the separator in `RecursiveCharacterTextSplitter`. Chunk overlap is set to 0. This decision was made because the unit of retrieval should be a complete dream entry. Splitting a dream mid-narrative would break the semantic coherence of the entry (the beginning and end of a single dream would appear in different chunks and could be retrieved independently, degrading retrieval precision and response quality. Using entry boundaries as natural split points keeps each retrieved chunk self-contained and meaningful.
+The document is split one dream entry per chunk, using `"Dream "` as the separator in `RecursiveCharacterTextSplitter`. Chunk overlap is set to 0. I made this decision because the unit of retrieval should be a complete dream entry (splitting a dream mid-narrative would break the coherence of the entry - bits of a single dream would appear in different chunks and could be retrieved independently, thus degrading retrieval precision and response quality). Using each dream as separate  keeps each retrieved chunk self-contained and meaningful.
 
-External API: Tavily Search API (`tavily_dream_info` tool). Used for general questions about dreaming and dream journaling (e.g. *"Is it helpful to keep a dream journal?"*). Tavily is not called for queries about the user's specific dreams. The tool is included in the prototype to meet the certification challenge requirements.
+I use  the Tavily Search API with the (`tavily_dream_info` tool) for general questions about dreaming and dream journaling (e.g. *"Is it helpful to keep a dream journal?"*). Tavily is not called for queries about the user's specific dreams. The tool is included in the prototype to meet the certification challenge requirements and I will probably remove it later as this exposes the app to the public web.
 
 ## 4. End-to-End Prototype
 
@@ -91,6 +88,7 @@ Full agent loop (LLM -> tool call -> retrieval -> LLM summarizes -> response) is
 - FastAPI backend (`api/index.py`) initialises the hybrid RAG pipeline and agent on startup
 - LangChain `create_agent()` with two `@tool` functions handles user queries
 - Next.js frontend (`frontend/`) provides a chat UI served at `localhost:3000`
+- Public deployment was not implemented by design as this would violate the privacy-first assumption of this app.
 
 Prototype UI screenshot:
 
@@ -98,19 +96,14 @@ Prototype UI screenshot:
   <img src="./dreamnest_prototype_UI.png" alt="DreamNest prototype UI" width="800px" height="auto"/>
 </p>
 
-*Local DreamNest prototype UI showing agentic retrieval responses in the chat flow.*
-
-Note: Runtime serving is agentic-only (`create_agent()` + tools). Legacy fixed-flow helpers are kept only for debugging in `debug/legacy_fixed_rag.py`.
-
-NOTE: Public deployment was not implemented by design as this would violate the privacy-first assumption of this prototype.
+*DreamNest prototype UI showing an example of agentic retrieval in action.*
 
 ## 5. Evaluation
 
-Evaluation was run using the RAGAS framework with LLM as a judge.
+Evaluation was run using the RAGAS framework with LLM as a judge. 
+I manually curated a golden test set (10 test cases ) covering key intended behaviours: positive retrieval (objects, motifs, animals), negative retrieval (no hallucination on absent terms), pattern aggregation, guardrail enforcement (interpretation refusal), and out-of-scope query handling.
 
-The golden test set (10 manually defined cases) covers: positive retrieval (objects, motifs, animals), negative retrieval (no hallucination on absent terms), pattern aggregation, guardrail enforcement (interpretation refusal), and out-of-scope query handling.
-
-Metrics evaluated:
+I evaluated the pefromance on the following RAGAS metrics:
 
 - Faithfulness — checks whether the answer stays grounded in retrieved context
 - Answer Relevancy — checks whether the answer addresses the user question
@@ -118,7 +111,7 @@ Metrics evaluated:
 - Context Recall — checks whether relevant chunks were retrieved
 - Noise Sensitivity — checks how much irrelevant retrieved context affects answer quality
 
-Baseline results (semantic retriever):
+Baseline semantic retriever performance:
 
 | Metric | Score |
 |---|---|
@@ -128,19 +121,21 @@ Baseline results (semantic retriever):
 | Context Recall | 0.3500 |
 | Noise Sensitivity | 0.3699 |
 
+NOTE: RAGAS LLM-as-judge evaluator is non-deterministic across runs and the results should be read in terms trends rather than absolute values.
 
 ## 6. Retriever Upgrade
 
-Advanced retrieval technique: Hybrid retrieval (semantic + BM25 lexical retrieval + weighted RRF fusion)
+The retriever was upgraded to hybrid retrieval (semantic + BM25 lexical retrieval + RRF fusion)
 
-Semantic similarity alone struggles with exact keyword queries. Embedding models represent meaning in a continuous space, which is good for thematic queries ("recurring locations") but can miss exact term matches for rare or specific words ("fire", "train", "clock") if their cosine similarity scores fall below the retrieval threshold. BM25 lexical search is strong at exact matches but misses semantic variation. Combining both approaches improves recall for specific keyword queries while retaining semantic breadth for thematic ones.
+I did this because on the assumption that semantic similarity alone struggles with exact keyword queries. BM25 lexical search is strong at exact matches. Combining both approaches would improve recall for specific keyword queries while retaining semantic breadth for thematic ones.
 
 Implementation:
-- Semantic component: Qdrant similarity search with score-based filtering (minimum threshold 0.2; relative filter at 75% of top score)
-- Lexical component: BM25Retriever over dream chunks with normalized query token handling
-- Fusion: weighted Reciprocal Rank Fusion (RRF), with a slight lexical boost for exact-match queries, returning top `k=3` results
 
-Hybrid results (agentic pipeline):
+- Semantic similarity search
+- Lexical BM25 retriever 
+- Fusion: Reciprocal Rank Fusion (RRF) returning top `k=3` chunks
+
+Hybrid retriever performance:
 
 | Metric | Baseline (semantic) | Hybrid (semantic + lexical) |
 |---|---|---|
@@ -150,31 +145,24 @@ Hybrid results (agentic pipeline):
 | Context Recall | 0.3500 | **0.4000** |
 | Noise Sensitivity | 0.3699 | **0.2803** |
 
-Evaluation note: In this run, the hybrid retriever improved retrieval quality (`context_precision`, `context_recall`) and reduced noise sensitivity, with only a negligible drop in faithfulness. Since RAGAS is LLM-judge based and non-deterministic, results should be interpreted as trend evidence and validated across repeated runs.
+The hybrid retriever improved retrieval quality (`context_precision`, `context_recall`) and reduced noise sensitivity. However, faithfulness didn't improve, in  fact it dropped slightly.
 
-Noise metric note: We track `noise_sensitivity_relevant` to measure how much irrelevant retrieved context interferes with answer quality (lower is better). In this run it improved from 0.3699 (baseline) to 0.2803 (hybrid). Example from per-question outputs: for `"Have I dreamt about whales?"`, retrieved contexts still included multiple water-related dreams that did not mention whales. This illustrates residual retrieval noise from semantic similarity, even when the final answer is correct.
+Noise sensitivity improved from 0.3699 (baseline) to 0.2803 (hybrid). For `"Have I dreamt about whales?"`, retrieved contexts still included multiple water-related dreams that did not mention whales. This illustrates retrieval noise from semantic similarity.
 
 ## 7. Next Steps
 
-- **Retrieval quality**
-  - Add query-aware retrieval depth (higher top-k for pattern/aggregation queries).
-  - Improve recurring-pattern aggregation and symbol extraction beyond keyword matching.
-  - Evaluate local/open-source rerankers and metadata-aware retrieval (not external services like Cohere Rerank, to preserve privacy goals).
-- **Product and UX**
-  - Add timeline and dashboard views for recurring motifs/locations.
-  - Add visualizations and emotional-tone retrieval for richer reflection workflows.
-  - Allow users to upload their own dream journal PDFs directly from the UI.
-- **Privacy and deployment**
-  - Replace Tavily with a fully local alternative to remove the remaining external API dependency.
-  - Assess performance/scalability on laptop-class hardware and evaluate persistent vector storage options.
-  - Explore optional public corpora (e.g., DreamBank) and gather feedback from open-source self-analysis communities.
+- Try other retrieval strategies such as reranking with an open soucre model, if available (I didn't use the Cogere Reranker give my privacy concern)
+- Try query-aware retrieval with as higher top-k for pattern/aggregation queries
+- Explore theme extraction beyond keyword matching with, e.g. a classifier.
+- Add timeline and dashboard views for recurring themes.
+- Explore emotional-tone retrieval for richer reflection workflows, potentially with a classifier.
+- Allow users to upload their own dream journal PDFs directly from the UI.
+- Potetnially remove Tavily web search tool given it exposes the app to the web. 
+- Assess better options in terms of performance on local hardware such as laptops specially for the vector storage options. I run the LLM inference on a private GPU since my laptop struggled but kept the vector store on my laptop and it felt heavy.
+- Explore public corpora for demo data and training data for classifiers.
+- Consider asking for feedback from the community when an improved version is built.
 
-## Notes and Limitations
-
-- Privacy-first/local-first is the target architecture for this project, but the current prototype is not strictly fully local while Tavily is enabled because Tavily is an external web API.
-- Tavily is included in this prototype to satisfy the assignment requirement to integrate at least one external API/tool.
-- The current prototype uses an in-memory Qdrant vector store and local model inference, which can be slow or resource-heavy on a laptop-class machine; this will be reviewed in future iterations.
-- RAGAS uses an LLM-as-judge evaluator, so metric scores are non-deterministic across runs; single-run results should be treated as indicative trends rather than absolute values.
+This app is a prototype so it has obviius limitaions. I was primarily copncerned with the pivacy-first local deployment but the prototype   uses Tavily to satisfy the certification challenges requirements. As mentioned before, the  prototype uses an in-memory Qdrant vector store and local model inference, which is resource-heavy and may be slow if using a laptop not GPU. This will be reviewed in future iterations.
 
 ## How to Run
 
