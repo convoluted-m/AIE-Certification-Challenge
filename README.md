@@ -2,6 +2,8 @@
 
 Privacy-first agentic RAG system for reflective dream exploration. Built with open-source models, run locally on the user's machine to preserve privacy. Built for the AI Makerspace AIE9 Certification Challenge.
 
+Loom [video](https://www.loom.com/share/7ad4c58bf91d471da47798120f090d98)
+
 ## 1. Problem + Audience
 
 This app is built for people like me who keep dream journals and want to search through them in an easy way to reflect on their dream life. Over months and years, one can end up with many notebooks full of recurring themes and be unable to connect the dots, to point to the exact dreams featuring specific patterns. It's hard to do it by hand, take my word. It should be easier than flipping through the pages of physical notebooks! If you ever wondered, *"When have I dreamt about fire?"* or *"Do I dream of flying yetis often?", you're not alone :). This app is a solution to this pain by providing grounded, descriptive answers to dream queries drawn only from the user's private dream archive. And because working with your intimate dream data should feel like a safe cosy space this app runs fully locally and the user's dream data is not to third-parties. Finally, I forml;y believe that dream analysis should preserves the user's agency in meaning-making. That's why this system focuses on descriptive retrieval,not interpretation - let's save that for actual analysis sessions and long dark night pondering. Welcome to your DreamNest.
