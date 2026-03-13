@@ -1,6 +1,6 @@
 {
   "note": "RAGAS evaluation is non-deterministic (LLM-as-judge). Scores vary between runs.",
-  "generated_at_utc": "2026-03-13T11:54:12Z",
+  "generated_at_utc": "2026-03-13T13:57:42Z",
   "metrics": [
     "faithfulness",
     "answer_relevancy",
