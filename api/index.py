@@ -18,7 +18,6 @@ from pydantic import BaseModel
 from agent import (
     init_pipeline_hybrid,
     get_llm,
-    get_llm_openai,
     build_retrieval_agent,
     dream_archive_search,
 )
@@ -48,7 +47,6 @@ async def startup_event() -> None:
     vector_store, bm25_retriever = init_pipeline_hybrid()
 
     # Privacy-first local model via Ollama (gpt-oss:20b on remote GPU at 10.56.69.207).
-    # To temporarily fall back to OpenAI for debugging, swap to: llm = get_llm_openai()
     llm = get_llm()
 
     # for debugging

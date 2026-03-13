@@ -33,3 +33,6 @@ __pycache__/
 .venv
 uv.lock
 workspace
+
+copy.md
+test.py

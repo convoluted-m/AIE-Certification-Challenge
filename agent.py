@@ -7,18 +7,15 @@ Includes a baseline retriever (semantic search only) and a hybrid retriever (sem
 ## Imports
 # Langchain
 from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 from langchain.agents import create_agent
 from langchain_community.retrievers import BM25Retriever
 from langchain_tavily import TavilySearch
 
 # Qdrant
-from langchain_qdrant import Qdrant
 from langchain_core.documents import Document
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
@@ -26,11 +23,10 @@ from qdrant_client.http.models import Distance, VectorParams
 
 # For files 
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
+import re
 
 from dotenv import load_dotenv
-import os
-from getpass import getpass
 load_dotenv()
 
 ## Constants
@@ -180,30 +176,6 @@ def get_llm() -> ChatOllama:
     return llm
 
 
-# TEMPORARY helper for debugging: use OpenAI model instead of local Ollama.
-# This is ONLY to prove that the FastAPI + agent + tools wiring is correct.
-# To restore the privacy-first local setup, switch FastAPI's startup back
-# to `get_llm()` and stop using this function.
-def get_llm_openai() -> ChatOpenAI:
-    """
-    Initialise an OpenAI-hosted chat model for debugging.
-
-    This uses `langchain_openai.ChatOpenAI` and relies on the environment
-    variable OPENAI_API_KEY being set. It is NOT privacy-first, since
-    prompts and context leave the local machine.
-
-    Use this only to confirm that the agent + tools stack works independently
-    of Ollama's streaming behaviour, then switch back to `get_llm()`.
-    """
-    llm = ChatOpenAI(
-        model="gpt-4.1-mini",
-        temperature=0,
-    )
-    global RESPONSE_LLM
-    RESPONSE_LLM = llm
-    return llm
-
-
 # Initialise embedding model 
 def get_embeddings() -> OllamaEmbeddings:
     """
@@ -271,6 +243,27 @@ def build_bm25_retriever(chunks: List[Document]) -> BM25Retriever:
     return retriever
 
 
+#  stopword set for lexical filtering to reduce noise
+STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "your", "have",
+    "has", "had", "about", "what", "when", "where", "which", "does", "did",
+    "are", "was", "were", "into", "onto", "over", "under", "then", "than",
+    "can", "could", "would", "should", "please", "dream", "dreams", "my",
+}
+
+
+def _normalize_query_tokens(text: str) -> List[str]:
+    """
+    Normalize query text into lexical tokens used by BM25 filtering/fusion.
+
+    Why this helps:
+    - Handles punctuation variants (e.g. "fire?" -> "fire")
+    - Reduces noise by dropping very short/common stopwords
+    """
+    raw_tokens = re.findall(r"[a-zA-Z]+", text.lower())
+    return [tok for tok in raw_tokens if len(tok) > 2 and tok not in STOPWORDS]
+
+
 # initialise RAG pipeline - baseline semantic retrieval
 def init_pipeline_semantic() -> QdrantVectorStore:
     """
@@ -309,57 +302,6 @@ def init_pipeline_hybrid() -> tuple[QdrantVectorStore, BM25Retriever]:
     return vector_store, bm25_retriever
 
 
-# RAG answer function (semantic only - baseline)
-# used by fastapi app to answer user questions
-def answer_dream_query_semantic(
-    query: str,
-    vector_store: QdrantVectorStore,
-    llm: ChatOllama,
-) -> str:
-    """
-    Uses  vector store to retrieve similar dream chunks.
-    Applies a similarity threshold to avoid weak matches.
-    Formats context and passes to the LLM 
-    Returns the LLM response.
-    """
-    results_with_scores = vector_store.similarity_search_with_score(query, k=3)
-
-    if not results_with_scores:
-        return "No strong matches were found in your dream archive for this query."
-
-    # Tresholding logic to filter out weaker matches
-    # only keep chunks with a similarity score >= 0.4
-    top_doc, top_score = results_with_scores[0]
-    if top_score < 0.4:
-        return "No strong matches were found in your dream archive for this query."
-    # only keep chunks very close to the best score >= 80% of top_score
-    min_score = max(0.45, top_score * 0.80)
-    filtered_results = [
-        (doc, score) for doc, score in results_with_scores if score >= min_score
-    ]
-    if not filtered_results:
-        return "No strong matches were found in your dream archive for this query."
-
-    # format chunks for the response
-    formatted_chunks: list[str] = []
-    for idx, (doc, score) in enumerate(filtered_results, start=1):
-        source = doc.metadata.get("source", "unknown source")
-        page = doc.metadata.get("page", "unknown page")
-        formatted_chunks.append(
-            f"Retrieved dream {idx} (Source: {source}, Page: {page}):\n"
-            f"{doc.page_content.strip()}"
-        )
-    context = "\n\n".join(formatted_chunks)
-    # Pass system prompt + user query + retrieved context as a message list
-    from langchain_core.messages import SystemMessage, HumanMessage as HMsg
-    messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HMsg(content=f"Query: {query}\n\nRetrieved context:\n{context}"),
-    ]
-    response = llm.invoke(messages)
-    return response.content
-
-
 # Hybrid retriever with bm25
 def hybrid_retrieve(
     query: str,
@@ -370,15 +312,13 @@ def hybrid_retrieve(
     k_final: int = 3,
 ) -> List[Document]:
     """
-    Hybrid retrieval combining lexical and semantic search.
-    - Gets top-k semantic matches from Qdrant and applies the same thresholding
-      logic as the baseline semantic retriever.
-    - Gets top-k lexical matches with BM25 and applies a simple keyword filter
-      so that the raw query terms appear in the retrieved chunks.
-    - Fuses results to return a de-duplicated list preferring lexical hits over
-      semantic hits, up to k_final results.
+    Hybrid retrieval combining semantic (Qdrant) + lexical (BM25) retrieval.
+    The final ranking uses weighted Reciprocal Rank Fusion (RRF):
+    - semantic rank contributes broad thematic relevance
+    - lexical rank contributes exact-term relevance
+    This gives robust performance for both abstract and exact-match queries.
     """
-    # Semantic results with score-based thresholding
+    # Semantic retrieval with score-based thresholding to filter out weak matches
     results_with_scores = vector_store.similarity_search_with_score(query, k=k_semantic)
 
     top_score = results_with_scores[0][1] if results_with_scores else 0
@@ -392,71 +332,65 @@ def hybrid_retrieve(
             doc for doc, score in results_with_scores if score >= min_score
         ]
     else:
-        # Semantic scores very low — rely on keyword scan below
+        # Semantic scores very low — rely more on BM25 below.
         semantic_docs = []
 
-    # Keyword scan: search all chunks for exact token matches.
-    # Used as the lexical component of hybrid retrieval.
-    query_tokens = [t for t in query.lower().split() if len(t) > 2 and t.isalpha()]
+    # lexical retrieval using BM25
+    # Use normalized tokens to improve query robustness ("fire?" -> "fire").
+    query_tokens = _normalize_query_tokens(query)
+    lexical_query = " ".join(query_tokens) if query_tokens else query
+    lexical_candidates: List[Document] = bm25_retriever.invoke(lexical_query)[:k_lexical]
+
     if query_tokens:
-        lexical_docs: List[Document] = [
-            doc for doc in DREAM_CHUNKS
-            if any(tok in doc.page_content.lower() for tok in query_tokens)
-        ][:k_lexical]
-    else:
+        # Filter lexical hits to chunks that contain at least one normalized term.
+        # This avoids retrieving chunks that are BM25-near but semantically off-target.
         lexical_docs = []
+        for doc in lexical_candidates:
+            doc_tokens = set(re.findall(r"[a-zA-Z]+", doc.page_content.lower()))
+            if any(tok in doc_tokens for tok in query_tokens):
+                lexical_docs.append(doc)
+    else:
+        lexical_docs = lexical_candidates
 
-    # Fuse: semantic first (higher quality), then BM25 to fill gaps
-    seen = set()
-    fused: List[Document] = []
+    # Weighted Reciprocal Rank Fusion (RRF).
+    # BM25 gets a small boost for exact term matching; semantic captures paraphrase/theme.
+    fusion_scores: Dict[Tuple[str, str, str], float] = {}
+    docs_by_key: Dict[Tuple[str, str, str], Document] = {}
+    first_seen_idx: Dict[Tuple[str, str, str], int] = {}
+    rrf_k = 60
+    semantic_weight = 1.0
+    lexical_weight = 1.15
+    seen_counter = 0
 
-    for doc in semantic_docs + lexical_docs:
-        key = doc.page_content
-        if key in seen:
-            continue
-        seen.add(key)
-        fused.append(doc)
-        if len(fused) >= k_final:
-            break
-
-    return fused
-
-
-# RAG answer function (lexical and semantic search - hybrid)
-def answer_dream_query_hybrid(
-    query: str,
-    vector_store: QdrantVectorStore,
-    bm25_retriever: BM25Retriever,
-    llm: ChatOllama,
-) -> str:
-    """
-    Answers the user's query using the hybrid retriever.
-    Gets the top-k lexical and semantic matches. 
-    Formats results and passes to LLM.
-    Returns the LLM response.
-    """
-    # fused docs
-    docs = hybrid_retrieve(query, vector_store, bm25_retriever)
-    if not docs:
-        return "No strong matches were found in your dream archive for this query."
-
-    # format chunks for the response
-    formatted_chunks: list[str] = []
-    for idx, doc in enumerate(docs, start=1):
-        source = doc.metadata.get("source", "unknown source")
-        page = doc.metadata.get("page", "unknown page")
-        formatted_chunks.append(
-            f"Retrieved dream {idx} (Source: {source}, Page: {page}):\n"
-            f"{doc.page_content.strip()}"
+    for rank, doc in enumerate(semantic_docs, start=1):
+        key = (
+            str(doc.metadata.get("source", "")),
+            str(doc.metadata.get("page", "")),
+            doc.page_content,
         )
-    context = "\n\n".join(formatted_chunks)
-    from langchain_core.messages import SystemMessage, HumanMessage as HMsg
-    messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HMsg(content=f"Query: {query}\n\nRetrieved context:\n{context}"),
-    ]
-    response = llm.invoke(messages)
-    return response.content
+        docs_by_key[key] = doc
+        if key not in first_seen_idx:
+            first_seen_idx[key] = seen_counter
+            seen_counter += 1
+        fusion_scores[key] = fusion_scores.get(key, 0.0) + semantic_weight * (1.0 / (rrf_k + rank))
+
+    for rank, doc in enumerate(lexical_docs, start=1):
+        key = (
+            str(doc.metadata.get("source", "")),
+            str(doc.metadata.get("page", "")),
+            doc.page_content,
+        )
+        docs_by_key[key] = doc
+        if key not in first_seen_idx:
+            first_seen_idx[key] = seen_counter
+            seen_counter += 1
+        fusion_scores[key] = fusion_scores.get(key, 0.0) + lexical_weight * (1.0 / (rrf_k + rank))
+
+    ranked_keys = sorted(
+        fusion_scores.keys(),
+        key=lambda key: (-fusion_scores[key], first_seen_idx[key]),
+    )
+    return [docs_by_key[key] for key in ranked_keys[:k_final]]
 
 
 ## Agent's tools
@@ -481,7 +415,7 @@ def dream_archive_search(query: str) -> str:
         raise RuntimeError("Dream pipeline not initialised. Call init_pipeline_hybrid() first.")
 
     print(f"[TOOL] dream_archive_search called — query: {query!r}")
-    # Hybrid retrieval: semantic (Qdrant) + lexical keyword scan (in-memory).
+    # Hybrid retrieval: semantic (Qdrant) + lexical retrieval (BM25).
     # Combines semantic similarity with exact keyword matching so that both
     # thematic queries ("recurring locations") and specific keyword queries
     # ("fire", "whale", "clocks") are handled reliably.

@@ -67,7 +67,7 @@ Tooling choices:
 - Deployment — Local only as a privacy requirement — user data does not leave the device.
 
 RAG components:
-- Retriever: hybrid retriever combining Qdrant semantic search and in-memory lexical keyword scan, fused by result de-duplication preferring semantic hits
+- Retriever: hybrid retriever combining Qdrant semantic search and BM25 lexical retrieval, fused via weighted reciprocal rank fusion (RRF)
 - Generator: `ChatOllama (gpt-oss:20b)` summarises raw retrieved dream content into a natural language response
 
 Agent components:
@@ -91,6 +91,8 @@ Full agent loop (LLM → tool call → retrieval → LLM summarises → response
 - FastAPI backend (`api/index.py`) initialises the hybrid RAG pipeline and agent on startup
 - LangChain `create_agent()` with two `@tool` functions handles user queries
 - Next.js frontend (`frontend/`) provides a chat UI served at `localhost:3000`
+
+Note: Runtime serving is agentic-only (`create_agent()` + tools). Legacy fixed-flow helpers are kept only for debugging in `debug/legacy_fixed_rag.py`.
 
 NOTE: Public deployment was not implemented by design as this would violate the privacy-first assumption of this prototype.
 
