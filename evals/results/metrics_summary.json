@@ -1,0 +1,17 @@
+{
+  "note": "RAGAS evaluation is non-deterministic (LLM-as-judge). Scores vary between runs. Values below are from the representative run used for reporting.",
+  "baseline": {
+    "faithfulness": 0.5018,
+    "answer_relevancy": 0.3795,
+    "context_precision": 0.6,
+    "context_recall": 0.45,
+    "noise_sensitivity_relevant": 0.4435
+  },
+  "hybrid": {
+    "faithfulness": 0.5467,
+    "answer_relevancy": 0.3703,
+    "context_precision": 0.5,
+    "context_recall": 0.35,
+    "noise_sensitivity_relevant": 0.4271
+  }
+}

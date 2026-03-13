@@ -5,16 +5,17 @@ Includes a baseline retriever (semantic search only) and a hybrid retriever (sem
 """
 
 ## Imports
-
 # Langchain
 from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
 from langchain.agents import create_agent
 from langchain_community.retrievers import BM25Retriever
-# for certification challenge only - external search with tavilly
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_tavily import TavilySearch
 
 # Qdrant
 from langchain_qdrant import Qdrant
@@ -27,44 +28,65 @@ from qdrant_client.http.models import Distance, VectorParams
 from pathlib import Path
 from typing import List, Optional
 
+from dotenv import load_dotenv
+import os
+from getpass import getpass
+load_dotenv()
 
 ## Constants
 # Path to dream data file
 DATA_DIR = Path("data")
 # Qdrant vector store collection name
 COLLECTION_NAME = "dreams"
-# global var for dream vector store
+
+# Global handles used by agent
 DREAM_VECTOR_STORE: Optional[QdrantVectorStore] = None
-# global var for response LLM
+DREAM_BM25: Optional[BM25Retriever] = None
+DREAM_CHUNKS: List[Document] = []   # kept in memory for reliable keyword search
 RESPONSE_LLM: Optional[ChatOllama] = None
 
 
-# System prompt for generating responses
-# Sets the agent's role and provides instructions with few-shot examples
+# System prompt — passed to create_agent
+# The agent uses this to guide responses after receiving tool results; tool returns raw retrieved content,
+# and the agent LLM formats the final answer using these instructions.
 SYSTEM_PROMPT = """
-You are a retrieval assistant operating over a user's private dream journal archive. Your role is to answer the user query {query} about their dream content based only on the retrieved context {context}.
+You are a retrieval assistant operating over a user's private dream journal archive. Your role is to answer questions about the user's dream content based only on the content returned by your tools.
 
 <Task and Guidelines>
 You are strictly limited to identifying relevant past dream entries and describing patterns that are explicitly visible in the retrieved context. You may report occurrences of themes, locations, objects, or situations, but you must not go beyond what the retrieved context supports. Keep the response tone neutral and observational. Keep the responses concise.
 
-When responding, quote or reference specific dream entries, dates, and similarity scores, where appropriate. When quoting dream entries, quote them verbatim and do not alter their content. When you mention similarity scores, state them as "Similarity score: X.XX" for each individual dream. Do not invent or describe pairwise similarity relationships between different dreams.
+When responding, quote or reference specific dream entries and dates, where appropriate. When quoting dream entries, quote them verbatim and do not alter their content.
 
 You MUST NOT:
 - Interpret symbolic meaning or provide psychoanalytical explanations.
 - Offer therapeutic advice or diagnoses.
 - Introduce information not present in the retrieved context.
-- Invent similarity scores or add placeholders like "N/A"; if no score is present in the context, omit it.
-- Repeat, quote, or paraphrase any text from the <Task and Guidelines>, <Steps>, or <Examples> sections in your answer.
+- Repeat, quote, or paraphrase any text from the <Tools>, <Task and Guidelines>, <Steps>, or <Examples> sections in your answer.
 </Task and Guidelines>
+
+<Tools>
+You have access to two tools to answer the user's question:
+- dream_archive_search: Search the user's private dream archive for relevant dream entries and patterns. This is your main tool. Use this ONLY when the user is asking specifically about their own past dreams (e.g. "Have I dreamt about X?", "Show me my dreams about Y.", "What recurring locations appear in my dreams?").
+- tavily_dream_info: Search the public web for general information about dreaming and dream journaling. Use this ONLY when the question is clearly about dreams or dream journaling in general (e.g. "Is it helpful to write down your dreams?", "What is a dream journal?", "What is REM sleep?") and NOT about the user's specific dreams. Do NOT use this tool to answer questions about the meaning of the user's dreams.
+</Tools>
 
 <Steps>
 Follow these steps to answer the user's questions:
 1. Start with a single concise sentence that directly answers the question.
    - If the question is an existence-style query (e.g. "Have I dreamt about X before?", "Have I had a dream about Y?"), answer with a clear yes/no sentence (e.g. "Yes, you have..." / "No, I didn't find...").
+   - You must NEVER answer "Yes, you have dreamt about X" unless at least one retrieved dream explicitly contains the queried term X in its text. If no retrieved dream explicitly mentions X, you MUST answer that you did NOT find any dreams featuring X.
    - If the question is open-ended (e.g. "What recurring locations appear in my dreams?"), start with a brief summary sentence that directly addresses the query.
-2. If relevant dreams are present in the context, list the most relevant dreams (date and a brief excerpt, and, if provided, similarity score).
+2. If relevant dreams are present in the context, list the most relevant dreams (date and a brief excerpt). If you mention dreams, apart from mentioning the dream name, either quote the dream verbatim or provide a brief excerpt and ask if the user wants to see the whole dream(s).
 3. Do not say that no relevant dreams were found if you have relevant dreams in the retrieved context.
-4. After you give the answer, finish with a short, relevant follow-up question asking if the user would like to search for anything else in their dreams.
+4. After you give the initial answer, ALWAYS finish with a short, relevant follow-up question, e.g. asking if the user would like to search for anything else in their dreams. 
+5. If the user says things like "no/thanks/that's it/goodbye" then reply with a relevant closing message such as "Okay, I'll be here if you'd like to search your dreams again."
+6. If the user asks about dream meaning, symbolism, or interpretation
+   (e.g. "What does it mean if I dream of X?", "What is the meaning of dreaming about Y?",
+   "What does dreaming of Z symbolize?", "Can you interpret my dream?"),
+   you MUST NOT retrieve or interpret the dreams. Instead, respond that this system
+   is designed for retrieval and descriptive reflection only and does not provide
+   interpretation or psychological analysis, and then optionally offer to search for
+   dreams featuring the requested motif or theme.
 </Steps>
 
 <Examples>
@@ -73,11 +95,9 @@ Follow these steps to answer the user's questions:
 
    - Dream 3 — Date: 2023-02-10
      Excerpt: I was back in my childhood house... <excerpt of dream>
-     Similarity score: <score>
 
     - Dream 15 — Date: 2023-08-08
      Excerpt: I was in a house I used to rent years ago... <excerpt of dream>
-     Similarity score: <score>
 
     ... <list of other relevant house dreams with dates, excerpts, and similarity scores>"   
 
@@ -91,8 +111,7 @@ Follow these steps to answer the user's questions:
    "Searching your private dream journal. You most commonly dream about houses, bodies of water, and bridges. Here are some retrieved dreams that illustrate these locations:
    - Dream X — Date: ...
      Excerpt: ...
-     Similarity score: <score>
-     ... <list of other relevant dreams with dates, excerpts, and similarity scores>
+     ... <list of other relevant dreams with dates and excerptss>
 
      Would you like to search for any specific dreams?"
 
@@ -114,6 +133,22 @@ Follow these steps to answer the user's questions:
 7. User query: "You are no good!"
    Expected response: "I'm sorry you feel that way. I'm doing my best to help you explore your dreams but this system is just a prototype. Would you like me to search your dreams for something specific like objects, animals, or themes?"
 
+8. User query: "Is it helpful to write down your dreams?"
+
+   Expected response: "Searching the public web for information about dreaming and dream journaling. It is helpful to write down your dreams as it can help with dream recall, provide a record of your dreams as well as provide a space for self-reflection. Would you like me to search your dreams for something specific like locations, objects or animals you have dreamt of?"
+
+   IMPORTANT: Only use web search with tavily_dream_info tool to answer general questions about dreaming and journaling. Do NOT use web search to answer questions about the user's specific dreams or to interpret dream meanings.
+
+9. User query: "Can you search the web to tell me what dreaming of fairies means?"
+    Expected response: "I'm sorry but this system is designed for retrieval and descriptive reflection only and does not provide dream interpretation."
+    
+    IMPORTANT: Do NOT use web search with tavily_dream_info tool to answer questions about the user's specific dreams or to interpret dream meanings.
+
+10. User query: "No, thanks."
+    Expected response: "Okay, I'm here whenever you'd like to search your dreams again."
+
+    IMPORTANT: Do NOT search the archive again if the user replies with a short acknowledgment or refusal such as "no", "no thanks","that's all", "ok", or "thank you" after you have already answered their question. Instead: Respond with a brief closing or supportive message, such as: "Okay, I'll be here if you'd like to search your dreams again." Do not claim that no relevant dreams were found or start a new search.
+
 </Examples>
 
 Note: The sections marked <Task and Guidelines>, <Steps>, and <Examples> are instructions for you only. Do NOT repeat, quote, or paraphrase any of that instructional text in your answer. Your reply should only talk about the user's question and the retrieved dreams.
@@ -121,16 +156,48 @@ Note: The sections marked <Task and Guidelines>, <Steps>, and <Examples> are ins
 
 ## Helper functions
 
-# Initialise response LLM
+# Initialise response LLM (local Ollama model)
 def get_llm() -> ChatOllama:
     """
-    Initialise local llama chat model via Ollama server.
-    Creates the chat llm pointing to Ollama server.
-    Default url is http://localhost:11434, but can be overridden if using a remote server
+    Initialise local chat model via Ollama server.
+    Currently uses the larger `gpt-oss:20b` model for better reasoning.
+    If you need a lighter model, switch `model` below back to `"llama3.2:3b"`.
+
+    Default url is http://localhost:11434, but can be overridden if using a remote server.
     """
     llm = ChatOllama(
-        model="llama3.2:3b",
-        base_url="http://10.56.69.207:11434",  #remote private server onlocal machine to speed up response time
+        # Primary model for this project (heavier but stronger, fully local via Ollama):
+        model="gpt-oss:20b",
+        # To revert to the lighter local model, change the line above to:
+        # model="llama3.2:3b",
+        base_url="http://10.56.69.207:11434",  # remote private server on local machine to speed up response time
+        # Important: fully disable streaming aggregation to avoid
+        # `No data received from Ollama stream` errors in langchain-ollama.
+        disable_streaming=True,
+    )
+    global RESPONSE_LLM
+    RESPONSE_LLM = llm
+    return llm
+
+
+# TEMPORARY helper for debugging: use OpenAI model instead of local Ollama.
+# This is ONLY to prove that the FastAPI + agent + tools wiring is correct.
+# To restore the privacy-first local setup, switch FastAPI's startup back
+# to `get_llm()` and stop using this function.
+def get_llm_openai() -> ChatOpenAI:
+    """
+    Initialise an OpenAI-hosted chat model for debugging.
+
+    This uses `langchain_openai.ChatOpenAI` and relies on the environment
+    variable OPENAI_API_KEY being set. It is NOT privacy-first, since
+    prompts and context leave the local machine.
+
+    Use this only to confirm that the agent + tools stack works independently
+    of Ollama's streaming behaviour, then switch back to `get_llm()`.
+    """
+    llm = ChatOpenAI(
+        model="gpt-4.1-mini",
+        temperature=0,
     )
     global RESPONSE_LLM
     RESPONSE_LLM = llm
@@ -196,9 +263,12 @@ def build_bm25_retriever(chunks: List[Document]) -> BM25Retriever:
     """ 
     Builds the lexical retriever (bm25) using the chunks.
     Lexical retriever searches for exact keyword matches in the chunks.
+    k=20 so we get enough candidates before applying keyword filter.
     Returns the BM25Retriever object.    
     """
-    return BM25Retriever.from_documents(chunks)
+    retriever = BM25Retriever.from_documents(chunks)
+    retriever.k = 20
+    return retriever
 
 
 # initialise RAG pipeline - baseline semantic retrieval
@@ -211,8 +281,9 @@ def init_pipeline_semantic() -> QdrantVectorStore:
     chunks = load_and_chunk_dreams()
     vector_store = build_vector_store(chunks)
 
-    global DREAM_VECTOR_STORE
+    global DREAM_VECTOR_STORE, DREAM_CHUNKS
     DREAM_VECTOR_STORE = vector_store
+    DREAM_CHUNKS = []   # no keyword scan for semantic-only baseline
 
     return vector_store
 
@@ -229,8 +300,11 @@ def init_pipeline_hybrid() -> tuple[QdrantVectorStore, BM25Retriever]:
     vector_store = build_vector_store(chunks)
     bm25_retriever = build_bm25_retriever(chunks)
 
-    global DREAM_VECTOR_STORE # used by tools and agent
+    # expose for tools/agent
+    global DREAM_VECTOR_STORE, DREAM_BM25, DREAM_CHUNKS
     DREAM_VECTOR_STORE = vector_store
+    DREAM_BM25 = bm25_retriever
+    DREAM_CHUNKS = chunks
 
     return vector_store, bm25_retriever
 
@@ -272,16 +346,17 @@ def answer_dream_query_semantic(
         source = doc.metadata.get("source", "unknown source")
         page = doc.metadata.get("page", "unknown page")
         formatted_chunks.append(
-            f"Retrieved dream {idx} (Source: {source}, Page: {page}, Similarity score: {score:.2f}):\n"
+            f"Retrieved dream {idx} (Source: {source}, Page: {page}):\n"
             f"{doc.page_content.strip()}"
         )
-    # join chunks into a single context string
     context = "\n\n".join(formatted_chunks)
-    # inject the query and context into the system prompt
-    prompt = SYSTEM_PROMPT.format(query=query, context=context)
-    # invoke the LLM with the full prompt
-    response = llm.invoke(prompt)
-    # return the LLM response
+    # Pass system prompt + user query + retrieved context as a message list
+    from langchain_core.messages import SystemMessage, HumanMessage as HMsg
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HMsg(content=f"Query: {query}\n\nRetrieved context:\n{context}"),
+    ]
+    response = llm.invoke(messages)
     return response.content
 
 
@@ -296,29 +371,51 @@ def hybrid_retrieve(
 ) -> List[Document]:
     """
     Hybrid retrieval combining lexical and semantic search.
-    - Gets top-k lexical matches with BM25
-    - Gets top-k semantic matches from Qdrant
-    - Fuses results to return a de-duplicated list
-    Return a de-duplicated list preferring lexical hits over semantic hits
+    - Gets top-k semantic matches from Qdrant and applies the same thresholding
+      logic as the baseline semantic retriever.
+    - Gets top-k lexical matches with BM25 and applies a simple keyword filter
+      so that the raw query terms appear in the retrieved chunks.
+    - Fuses results to return a de-duplicated list preferring lexical hits over
+      semantic hits, up to k_final results.
     """
-    # lexical results
-    lexical_docs = bm25_retriever.invoke(query)[:k_lexical]
-    # semantic results 
-    semantic_docs = vector_store.similarity_search(query, k=k_semantic)
-    # de-duplication set
+    # Semantic results with score-based thresholding
+    results_with_scores = vector_store.similarity_search_with_score(query, k=k_semantic)
+
+    top_score = results_with_scores[0][1] if results_with_scores else 0
+    # Keep semantic docs if scores are above the minimum threshold.
+    # Threshold is 0.2 (not 0.4) because embeddinggemma produces scores in
+    # the 0.25-0.45 range on this corpus — a strict 0.4 cutoff blocks valid results.
+    # Relative filter keeps only docs within 75% of the top score.
+    if top_score >= 0.2:
+        min_score = top_score * 0.75
+        semantic_docs: List[Document] = [
+            doc for doc, score in results_with_scores if score >= min_score
+        ]
+    else:
+        # Semantic scores very low — rely on keyword scan below
+        semantic_docs = []
+
+    # Keyword scan: search all chunks for exact token matches.
+    # Used as the lexical component of hybrid retrieval.
+    query_tokens = [t for t in query.lower().split() if len(t) > 2 and t.isalpha()]
+    if query_tokens:
+        lexical_docs: List[Document] = [
+            doc for doc in DREAM_CHUNKS
+            if any(tok in doc.page_content.lower() for tok in query_tokens)
+        ][:k_lexical]
+    else:
+        lexical_docs = []
+
+    # Fuse: semantic first (higher quality), then BM25 to fill gaps
     seen = set()
-    # fused results list    
     fused: List[Document] = []
-    
-    # loop over results and add to fused list if not already seen
-    for doc in lexical_docs + semantic_docs:
+
+    for doc in semantic_docs + lexical_docs:
         key = doc.page_content
-        # key is the page content of the document
         if key in seen:
             continue
         seen.add(key)
         fused.append(doc)
-        # stop if we have reached the final number of results
         if len(fused) >= k_final:
             break
 
@@ -352,48 +449,70 @@ def answer_dream_query_hybrid(
             f"Retrieved dream {idx} (Source: {source}, Page: {page}):\n"
             f"{doc.page_content.strip()}"
         )
-    # join chunks into a context string
     context = "\n\n".join(formatted_chunks)
-    # inject query and context into  system prompt
-    prompt = SYSTEM_PROMPT.format(query=query, context=context)
-    # invoke LLM with full prompt
-    response = llm.invoke(prompt)
+    from langchain_core.messages import SystemMessage, HumanMessage as HMsg
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HMsg(content=f"Query: {query}\n\nRetrieved context:\n{context}"),
+    ]
+    response = llm.invoke(messages)
     return response.content
 
 
 ## Agent's tools
-# RAG tool for searching dreams (uses semantic retrieval function)
-@tool
+
+class _ArchiveQuery(BaseModel):
+    query: str = Field(description="Plain text search query, e.g. 'fire', 'house', 'recurring water dreams'")
+
+class _WebQuery(BaseModel):
+    query: str = Field(description="Plain text search query about dreaming or journaling")
+
+@tool("dream_archive_search", args_schema=_ArchiveQuery)
 def dream_archive_search(query: str) -> str:
     """
-    Tool: search the user's private dream archive for relevant entries and patterns.
-    Uses the same retrieval logic as the main DreamNest agent. 
-    Requires that init_pipeline_semantic() and get_llm() have been called so DREAM_VECTOR_STORE and RESPONSE_LLM are populated.
+    Search the user's private dream archive for relevant dream entries and patterns.
+    Use this tool for ANY question about the user's own past dreams — motifs, locations,
+    objects, recurring themes, specific events. Always call this tool for questions like
+    "Have I dreamt about X?", "Find dreams about Y", "What recurring themes appear in my dreams?".
+
+    Returns the raw retrieved dream entries for the agent to summarise.
     """
-    if DREAM_VECTOR_STORE is None or RESPONSE_LLM is None:
-        raise RuntimeError(
-            "Dream pipeline is not initialised. Call init_pipeline_semantic()/get_llm() first."
-        )
-    return answer_dream_query_semantic(query, DREAM_VECTOR_STORE, RESPONSE_LLM)
+    if DREAM_VECTOR_STORE is None:
+        raise RuntimeError("Dream pipeline not initialised. Call init_pipeline_hybrid() first.")
+
+    print(f"[TOOL] dream_archive_search called — query: {query!r}")
+    # Hybrid retrieval: semantic (Qdrant) + lexical keyword scan (in-memory).
+    # Combines semantic similarity with exact keyword matching so that both
+    # thematic queries ("recurring locations") and specific keyword queries
+    # ("fire", "whale", "clocks") are handled reliably.
+    docs = hybrid_retrieve(query, DREAM_VECTOR_STORE, DREAM_BM25)
+
+    if not docs:
+        return "No relevant dreams found in the archive for this query."
+
+    # Return raw formatted dream content — the agent LLM formats the final response
+    formatted = []
+    for i, doc in enumerate(docs, 1):
+        source = doc.metadata.get("source", "unknown source")
+        page = doc.metadata.get("page", "?")
+        formatted.append(f"[Dream {i} — source: {source}, page: {page}]\n{doc.page_content.strip()}")
+    return "\n\n".join(formatted)
 
 
-# Tavily tool for external search (for general info about dreaming/ journaling)
-@tool
+# Tavily tool for external search (for general info about dreaming)
+@tool("tavily_dream_info", args_schema=_WebQuery)
 def tavily_dream_info(query: str) -> str:
     """
-    Tool: search the public web for general information about dreaming and dream journaling.
-    Never use this tool to answer questions about the user's specific dreams or to interpret dream meanings.
+    Search the public web for general information about dreaming and dream journaling.
+
+    Use this tool ONLY for general, public information about sleep, dreaming, or journaling
+    (e.g. what is a dream journal, basic sleep hygiene, benefits of keeping a dream diary).
+    Do NOT use this tool to answer questions about the user's specific dreams or to interpret
+    dream meanings.
     """
-    client = TavilySearchResults(
-        max_results=3,
-        description=(
-            "Use this tool ONLY for general, public information about sleep, dreaming, "
-            "or journaling (e.g. what is a dream journal, basic sleep hygiene). "
-            "NEVER use it to interpret the user's dreams, analyse symbols, "
-            "or answer questions about this specific user's dream content."
-        ),
-    )
-    return client.run(query)
+    print(f"[TOOL] tavily_dream_info called — query: {query!r}")
+    client = TavilySearch(max_results=3)
+    return client.invoke(query)
 
 ## Agent
 # Create the RAG agent with tools
@@ -402,7 +521,9 @@ def build_retrieval_agent(llm: Optional[ChatOllama] = None):
     Creates an agent that can call the following tools:
     - dream_archive_search (private RAG over the user's dream journal)
     - tavily_dream_info (general info about dreaming / journaling)
-    Assumes init_pipeline_semantic() and get_llm() have been called beforehand if llm is None.
+
+    Assumes init_pipeline_semantic()/init_pipeline_hybrid() and get_llm()
+    have been called beforehand if llm is None.
     """
     agent_llm = llm or RESPONSE_LLM
     if agent_llm is None:
@@ -411,4 +532,6 @@ def build_retrieval_agent(llm: Optional[ChatOllama] = None):
         )
 
     tools = [dream_archive_search, tavily_dream_info]
-    return create_agent(agent_llm, tools=tools)
+    # One system prompt passed to create_agent — same pattern as the lesson code.
+    # The tool returns raw retrieved content; the agent LLM uses SYSTEM_PROMPT to format the answer.
+    return create_agent(agent_llm, tools=tools, system_prompt=SYSTEM_PROMPT)
